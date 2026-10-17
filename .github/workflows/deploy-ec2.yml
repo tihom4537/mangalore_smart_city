@@ -113,6 +113,10 @@ jobs:
           export DOCKER_CONFIG=$APP_DIR/.docker
           docker compose pull
           docker compose up -d --remove-orphans
+          if [ -f .restart-required ]; then
+            docker compose restart app
+            rm -f .restart-required
+          fi
           docker logout ghcr.io
           rm -rf $APP_DIR/.docker
           EOF

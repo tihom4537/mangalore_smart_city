@@ -113,5 +113,8 @@ fi
 # CORS origins are required in production; keep them in sync with the
 # pipeline's ALLOWED_ORIGINS on every deploy.
 if [ -n "${ALLOWED_ORIGINS:-}" ]; then
+  before="$(sha256sum config.toml)"
   sed -i "s|^allowed_origins = .*|allowed_origins = \"${ALLOWED_ORIGINS}\"|" config.toml
+  # The app only reads config.toml at startup; flag a restart for the deploy step.
+  [ "$before" = "$(sha256sum config.toml)" ] || touch .restart-required
 fi
