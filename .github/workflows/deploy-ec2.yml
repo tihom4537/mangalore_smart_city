@@ -6,6 +6,8 @@ name: CI/CD - Build & deploy to EC2
 # Required repo settings (Settings -> Secrets and variables -> Actions):
 #   variables: DEPLOY_ENABLED=true, EC2_HOST, EC2_USER
 #   secrets:   EC2_SSH_KEY  (private key contents for EC2_USER)
+#   optional:  ALLOWED_ORIGINS variable (CORS origin, e.g. https://wa.example.com;
+#              defaults to http://localhost:8090 for SSH-tunnel access)
 # Until DEPLOY_ENABLED is "true" only the build job runs.
 
 on:
@@ -93,7 +95,9 @@ jobs:
         run: |
           ssh target "sudo mkdir -p $APP_DIR && sudo chown \$(id -u):\$(id -g) $APP_DIR"
           scp deploy/ec2/docker-compose.yml deploy/ec2/bootstrap.sh target:$APP_DIR/
-          ssh target "chmod +x $APP_DIR/bootstrap.sh && APP_DIR=$APP_DIR $APP_DIR/bootstrap.sh"
+          ssh target "chmod +x $APP_DIR/bootstrap.sh && APP_DIR=$APP_DIR ALLOWED_ORIGINS='$ALLOWED_ORIGINS' $APP_DIR/bootstrap.sh"
+        env:
+          ALLOWED_ORIGINS: ${{ vars.ALLOWED_ORIGINS || 'http://localhost:8090' }}
 
       - name: Pull and restart stack
         run: |

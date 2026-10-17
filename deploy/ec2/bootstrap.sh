@@ -40,7 +40,7 @@ port = 8080
 read_timeout = 30
 write_timeout = 30
 base_path = ""
-allowed_origins = ""
+allowed_origins = "${ALLOWED_ORIGINS:-http://localhost:8090}"
 
 [database]
 host = "db"
@@ -108,4 +108,10 @@ EOF
 
   printf 'email: admin@admin.com\npassword: %s\n' "$admin_password" > INITIAL_ADMIN_CREDENTIALS.txt
   echo "bootstrap: created config.toml (admin credentials in $APP_DIR/INITIAL_ADMIN_CREDENTIALS.txt)"
+fi
+
+# CORS origins are required in production; keep them in sync with the
+# pipeline's ALLOWED_ORIGINS on every deploy.
+if [ -n "${ALLOWED_ORIGINS:-}" ]; then
+  sed -i "s|^allowed_origins = .*|allowed_origins = \"${ALLOWED_ORIGINS}\"|" config.toml
 fi
