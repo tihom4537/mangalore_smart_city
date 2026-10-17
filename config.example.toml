@@ -136,6 +136,12 @@ udp_port_max = 10100          # WebRTC UDP port range end
 # secret = "your-coturn-static-auth-secret"
 # credential_ttl = 86400
 
+# Mangaluru Mahanagara Palike grievance bot: any text message gets a
+# Garbage / Sewage menu, each opens a WhatsApp Flow form, and submissions
+# are stored in the mcc_grievances table. Flows are created on Meta on first use.
+[mcc]
+enabled = false
+
 # Default admin credentials (only used during initial setup when no users exist)
 [default_admin]
 email = "admin@admin.com"

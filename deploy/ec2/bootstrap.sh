@@ -110,11 +110,22 @@ EOF
   echo "bootstrap: created config.toml (admin credentials in $APP_DIR/INITIAL_ADMIN_CREDENTIALS.txt)"
 fi
 
-# CORS origins are required in production; keep them in sync with the
-# pipeline's ALLOWED_ORIGINS on every deploy.
+# Settings the pipeline owns, re-synced on every deploy.
+before="$(sha256sum config.toml)"
+
+# CORS origins are required in production.
 if [ -n "${ALLOWED_ORIGINS:-}" ]; then
-  before="$(sha256sum config.toml)"
   sed -i "s|^allowed_origins = .*|allowed_origins = \"${ALLOWED_ORIGINS}\"|" config.toml
-  # The app only reads config.toml at startup; flag a restart for the deploy step.
-  [ "$before" = "$(sha256sum config.toml)" ] || touch .restart-required
 fi
+
+# Mangaluru Mahanagara Palike grievance bot toggle.
+if [ -n "${MCC_ENABLED:-}" ]; then
+  if grep -q '^\[mcc\]' config.toml; then
+    sed -i "/^\[mcc\]/,/^\[/ s|^enabled = .*|enabled = ${MCC_ENABLED}|" config.toml
+  else
+    printf '\n[mcc]\nenabled = %s\n' "$MCC_ENABLED" >> config.toml
+  fi
+fi
+
+# The app only reads config.toml at startup; flag a restart for the deploy step.
+[ "$before" = "$(sha256sum config.toml)" ] || touch .restart-required

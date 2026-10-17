@@ -204,6 +204,11 @@ func (a *App) processIncomingMessageFull(phoneNumberID string, msg IncomingTextM
 		return
 	}
 
+	// Mangaluru Mahanagara Palike grievance bot takes over when enabled
+	if a.handleMCCMessage(account, contact, msg.ID, extracted) {
+		return
+	}
+
 	// Check if chatbot is enabled for this account (use cache)
 	settings, err := a.getChatbotSettingsCached(account.OrganizationID, account.Name)
 	if err != nil {

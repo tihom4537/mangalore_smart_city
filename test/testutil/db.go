@@ -128,6 +128,8 @@ func runMigrations(db *gorm.DB) error {
 		&models.CallPermission{},
 		// Audit
 		&models.AuditLog{},
+		// Mangaluru Mahanagara Palike grievances
+		&models.MCCGrievance{},
 	)
 }
 
@@ -155,6 +157,8 @@ func cleanupTables(db *gorm.DB) {
 		"chatbot_settings",
 		"ai_contexts",
 		"agent_transfers",
+		// MCC grievances
+		"mcc_grievances",
 		// WhatsApp tables
 		"messages",
 		"tags",

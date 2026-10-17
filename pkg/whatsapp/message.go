@@ -571,6 +571,13 @@ func ButtonURLParamsToComponents(buttonParams map[string]string, templateButtons
 // ctaText is the button text, flowToken is a unique token for tracking the flow response,
 // and firstScreen is the name of the first screen to navigate to
 func (c *Client) SendFlowMessage(ctx context.Context, account *Account, rcpt Recipient, flowID, headerText, bodyText, ctaText, flowToken, firstScreen string) (string, error) {
+	return c.SendFlowMessageWithMode(ctx, account, rcpt, flowID, headerText, bodyText, ctaText, flowToken, firstScreen, "")
+}
+
+// SendFlowMessageWithMode is SendFlowMessage with an explicit flow mode.
+// mode "draft" lets an unpublished flow be sent (for testing); "" or
+// "published" sends the published version.
+func (c *Client) SendFlowMessageWithMode(ctx context.Context, account *Account, rcpt Recipient, flowID, headerText, bodyText, ctaText, flowToken, firstScreen, mode string) (string, error) {
 	if flowID == "" {
 		return "", fmt.Errorf("flow ID is required")
 	}
@@ -608,6 +615,10 @@ func (c *Client) SendFlowMessage(ctx context.Context, account *Account, rcpt Rec
 				},
 			},
 		},
+	}
+
+	if mode == "draft" {
+		interactive["action"].(map[string]any)["parameters"].(map[string]any)["mode"] = "draft"
 	}
 
 	// Add header if provided

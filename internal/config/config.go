@@ -29,6 +29,13 @@ type Config struct {
 	Cookie       CookieConfig       `koanf:"cookie"`
 	Calling      CallingConfig      `koanf:"calling"`
 	TTS          TTSConfig          `koanf:"tts"`
+	MCC          MCCConfig          `koanf:"mcc"`
+}
+
+// MCCConfig controls the Mangaluru Mahanagara Palike grievance bot
+// (menu -> WhatsApp Flow form -> mcc_grievances table).
+type MCCConfig struct {
+	Enabled bool `koanf:"enabled"`
 }
 
 type TTSConfig struct {

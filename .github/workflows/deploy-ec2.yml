@@ -8,6 +8,7 @@ name: CI/CD - Build & deploy to EC2
 #   secrets:   EC2_SSH_KEY  (private key contents for EC2_USER)
 #   optional:  ALLOWED_ORIGINS variable (CORS origin, e.g. https://wa.example.com;
 #              defaults to http://localhost:8090 for SSH-tunnel access)
+#              MCC_ENABLED variable (grievance bot on/off; defaults to true)
 # Until DEPLOY_ENABLED is "true" only the build job runs.
 
 on:
@@ -24,7 +25,46 @@ env:
   APP_DIR: /opt/whatomate-mangalore
 
 jobs:
+  # Fast gate before building: the MCC grievance tests run against a real
+  # Postgres (the full upstream suite runs separately in test.yml).
+  test:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: whatomate_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.26"
+          cache: true
+
+      - name: Vet
+        run: go vet ./internal/handlers/ ./internal/models/ ./internal/config/ ./pkg/whatsapp/
+
+      - name: MCC tests
+        env:
+          TEST_DATABASE_URL: postgres://postgres:postgres@localhost:5432/whatomate_test?sslmode=disable
+        run: go test ./internal/handlers/ -run 'MCC' -count=1 -v
+
   build:
+    needs: test
     runs-on: ubuntu-latest
     permissions:
       contents: read
@@ -95,9 +135,10 @@ jobs:
         run: |
           ssh target "sudo mkdir -p $APP_DIR && sudo chown \$(id -u):\$(id -g) $APP_DIR"
           scp deploy/ec2/docker-compose.yml deploy/ec2/bootstrap.sh target:$APP_DIR/
-          ssh target "chmod +x $APP_DIR/bootstrap.sh && APP_DIR=$APP_DIR ALLOWED_ORIGINS='$ALLOWED_ORIGINS' $APP_DIR/bootstrap.sh"
+          ssh target "chmod +x $APP_DIR/bootstrap.sh && APP_DIR=$APP_DIR ALLOWED_ORIGINS='$ALLOWED_ORIGINS' MCC_ENABLED='$MCC_ENABLED' $APP_DIR/bootstrap.sh"
         env:
           ALLOWED_ORIGINS: ${{ vars.ALLOWED_ORIGINS || 'http://localhost:8090' }}
+          MCC_ENABLED: ${{ vars.MCC_ENABLED || 'true' }}
 
       - name: Pull and restart stack
         run: |
