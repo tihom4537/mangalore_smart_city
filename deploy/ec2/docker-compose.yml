@@ -1,0 +1,68 @@
+# Isolated Whatomate stack for the Mangalore Smart City deployment.
+#
+# Runs alongside the existing "staging-ec2" compose project on the same EC2
+# host without sharing anything with it: own project name, container names,
+# network, volumes and host port. Lives in /opt/whatomate-mangalore.
+#
+# .env (server-only, created by bootstrap.sh) supplies WHATOMATE_IMAGE and the
+# Postgres credentials; config.toml (server-only) holds the app config.
+name: whatomate-mangalore
+
+services:
+  app:
+    image: ${WHATOMATE_IMAGE:?WHATOMATE_IMAGE must be set in .env}
+    container_name: mgl_whatomate_app
+    restart: unless-stopped
+    ports:
+      # Loopback only; nginx (or an SSH tunnel) fronts it.
+      - "127.0.0.1:8090:8080"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      TZ: ${TZ:-Asia/Kolkata}
+    volumes:
+      - ./uploads:/app/uploads:rw
+      - ./audio:/app/audio:rw
+      - ./config.toml:/app/config.toml:ro
+    command: ["server", "-migrate", "-config", "/app/config.toml"]
+    mem_limit: 768m
+    cpus: 1.0
+
+  db:
+    image: postgres:17-alpine
+    container_name: mgl_whatomate_db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER} -d ${POSTGRES_DB}"]
+      interval: 10s
+      timeout: 5s
+      retries: 6
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    mem_limit: 512m
+    cpus: 0.5
+
+  redis:
+    image: redis:7-alpine
+    container_name: mgl_whatomate_redis
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    volumes:
+      - redis-data:/data
+    mem_limit: 128m
+    cpus: 0.25
+
+volumes:
+  postgres-data:
+  redis-data:

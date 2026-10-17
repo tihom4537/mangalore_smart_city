@@ -1,0 +1,132 @@
+name: CI/CD - Build & deploy to EC2
+
+# Builds the Whatomate image, pushes it to GHCR and deploys it to the
+# isolated "whatomate-mangalore" compose stack on the EC2 host.
+#
+# Required repo settings (Settings -> Secrets and variables -> Actions):
+#   variables: DEPLOY_ENABLED=true, EC2_HOST, EC2_USER
+#   secrets:   EC2_SSH_KEY  (private key contents for EC2_USER)
+# Until DEPLOY_ENABLED is "true" only the build job runs.
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-ec2
+  cancel-in-progress: false
+
+env:
+  APP_DIR: /opt/whatomate-mangalore
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    outputs:
+      image: ${{ steps.meta.outputs.image }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Compute image name
+        id: meta
+        run: |
+          repo="ghcr.io/${GITHUB_REPOSITORY,,}"
+          echo "repo=$repo" >> "$GITHUB_OUTPUT"
+          echo "image=$repo:sha-${GITHUB_SHA::7}" >> "$GITHUB_OUTPUT"
+
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GitHub Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Build and push image
+        uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          platforms: linux/amd64
+          push: true
+          tags: |
+            ${{ steps.meta.outputs.image }}
+            ${{ steps.meta.outputs.repo }}:latest
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy:
+    needs: build
+    if: vars.DEPLOY_ENABLED == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: read
+    env:
+      IMAGE: ${{ needs.build.outputs.image }}
+      TARGET: ${{ vars.EC2_USER }}@${{ vars.EC2_HOST }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Configure SSH
+        env:
+          EC2_SSH_KEY: ${{ secrets.EC2_SSH_KEY }}
+          EC2_HOST: ${{ vars.EC2_HOST }}
+        run: |
+          mkdir -p ~/.ssh
+          printf '%s\n' "$EC2_SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          ssh-keyscan -H "$EC2_HOST" >> ~/.ssh/known_hosts
+          printf 'Host target\n  HostName %s\n  User %s\n  IdentityFile ~/.ssh/deploy_key\n' \
+            "$EC2_HOST" "${{ vars.EC2_USER }}" > ~/.ssh/config
+
+      - name: Upload stack files
+        run: |
+          ssh target "sudo mkdir -p $APP_DIR && sudo chown \$(id -u):\$(id -g) $APP_DIR"
+          scp deploy/ec2/docker-compose.yml deploy/ec2/bootstrap.sh target:$APP_DIR/
+          ssh target "chmod +x $APP_DIR/bootstrap.sh && APP_DIR=$APP_DIR $APP_DIR/bootstrap.sh"
+
+      - name: Pull and restart stack
+        run: |
+          # Registry login uses a private DOCKER_CONFIG so the host's own
+          # ~/.docker credentials (used by other stacks) are never touched.
+          echo "${{ secrets.GITHUB_TOKEN }}" | ssh target \
+            "DOCKER_CONFIG=$APP_DIR/.docker docker login ghcr.io -u ${{ github.actor }} --password-stdin"
+
+          ssh target bash -s <<EOF
+          set -euo pipefail
+          cd $APP_DIR
+          sed -i "s|^WHATOMATE_IMAGE=.*|WHATOMATE_IMAGE=$IMAGE|" .env
+          export DOCKER_CONFIG=$APP_DIR/.docker
+          docker compose pull
+          docker compose up -d --remove-orphans
+          docker logout ghcr.io
+          rm -rf $APP_DIR/.docker
+          EOF
+
+      - name: Health check
+        run: |
+          ssh target bash -s <<'EOF'
+          for i in $(seq 1 30); do
+            if curl -fsS http://127.0.0.1:8090/health >/dev/null; then
+              echo "healthy"; exit 0
+            fi
+            sleep 5
+          done
+          echo "health check failed"; docker logs --tail 100 mgl_whatomate_app; exit 1
+          EOF
+
+      - name: Remove old images of this app
+        if: success()
+        run: |
+          # Only touches this repo's images; in-use ones fail to delete and are kept.
+          ssh target "docker images '${IMAGE%:*}' -q | sort -u | xargs -r docker rmi 2>/dev/null || true"
