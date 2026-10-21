@@ -285,6 +285,37 @@ type TemplateParam struct {
 	} `json:"video,omitempty"`
 }
 
+// SendLocationRequest sends an interactive message with WhatsApp's native
+// "Send location" button.
+func (c *Client) SendLocationRequest(ctx context.Context, account *Account, rcpt Recipient, bodyText string) (string, error) {
+	if bodyText == "" {
+		return "", fmt.Errorf("body text is required")
+	}
+	payload := map[string]any{
+		"messaging_product": "whatsapp",
+		"recipient_type":    "individual",
+		"type":              "interactive",
+		"interactive": map[string]any{
+			"type":   "location_request_message",
+			"body":   map[string]any{"text": bodyText},
+			"action": map[string]any{"name": "send_location"},
+		},
+	}
+	rcpt.SetOnPayload(payload)
+
+	respBody, err := c.doRequest(ctx, "POST", c.buildMessagesURL(account), payload, account.AccessToken)
+	if err != nil {
+		c.Log.Error("Failed to send location request", "error", err, "phone", rcpt.Phone)
+		return "", fmt.Errorf("failed to send location request: %w", err)
+	}
+	messageID, err := parseMessageID(respBody)
+	if err != nil {
+		return "", err
+	}
+	c.Log.Info("Location request sent", "message_id", messageID, "phone", rcpt.Phone)
+	return messageID, nil
+}
+
 // SendTemplateMessage sends a template message
 // sortParamKeys returns the keys of paramMap in the order they should be sent
 // to Meta. Named templates (forceLexical=true, or any non-numeric key) sort
@@ -578,6 +609,12 @@ func (c *Client) SendFlowMessage(ctx context.Context, account *Account, rcpt Rec
 // mode "draft" lets an unpublished flow be sent (for testing); "" or
 // "published" sends the published version.
 func (c *Client) SendFlowMessageWithMode(ctx context.Context, account *Account, rcpt Recipient, flowID, headerText, bodyText, ctaText, flowToken, firstScreen, mode string) (string, error) {
+	return c.SendFlowMessageWithData(ctx, account, rcpt, flowID, headerText, bodyText, ctaText, flowToken, firstScreen, mode, nil)
+}
+
+// SendFlowMessageWithData is SendFlowMessageWithMode plus initial screen
+// data (read by the first screen as ${data.<key>}, e.g. for init-values).
+func (c *Client) SendFlowMessageWithData(ctx context.Context, account *Account, rcpt Recipient, flowID, headerText, bodyText, ctaText, flowToken, firstScreen, mode string, data map[string]any) (string, error) {
 	if flowID == "" {
 		return "", fmt.Errorf("flow ID is required")
 	}
@@ -617,8 +654,12 @@ func (c *Client) SendFlowMessageWithMode(ctx context.Context, account *Account, 
 		},
 	}
 
+	params := interactive["action"].(map[string]any)["parameters"].(map[string]any)
 	if mode == "draft" {
-		interactive["action"].(map[string]any)["parameters"].(map[string]any)["mode"] = "draft"
+		params["mode"] = "draft"
+	}
+	if len(data) > 0 {
+		params["flow_action_payload"].(map[string]any)["data"] = data
 	}
 
 	// Add header if provided

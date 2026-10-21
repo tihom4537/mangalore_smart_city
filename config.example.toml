@@ -141,6 +141,8 @@ udp_port_max = 10100          # WebRTC UDP port range end
 # are stored in the mcc_grievances table. Flows are created on Meta on first use.
 [mcc]
 enabled = false
+# Reverse geocoder for the shared location (Nominatim API; default: public OSM instance)
+# geocoder_url = "https://nominatim.openstreetmap.org"
 
 # Default admin credentials (only used during initial setup when no users exist)
 [default_admin]

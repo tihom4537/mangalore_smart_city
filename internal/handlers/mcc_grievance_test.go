@@ -52,6 +52,10 @@ func newMCCMetaMock(t *testing.T) *mccMetaMock {
 			})
 		case strings.HasSuffix(p, "/media-photo-1"):
 			_ = json.NewEncoder(w).Encode(map[string]any{"url": m.server.URL + "/cdn/photo-1"})
+		case p == "/reverse":
+			_ = json.NewEncoder(w).Encode(map[string]any{
+				"display_name": "Hampankatta, Mangaluru, Dakshina Kannada, Karnataka, 575001, India",
+			})
 		case strings.HasPrefix(p, "/cdn/"):
 			w.Header().Set("Content-Type", "image/jpeg")
 			_, _ = w.Write([]byte("fake-jpeg"))
@@ -98,7 +102,7 @@ func newMCCTestApp(t *testing.T) (*App, *mccMetaMock, *models.WhatsAppAccount, *
 		WhatsApp:   whatsapp.NewWithBaseURL(log, meta.server.URL),
 		HTTPClient: &http.Client{Timeout: 5 * time.Second},
 		Config: &config.Config{
-			MCC:     config.MCCConfig{Enabled: true},
+			MCC:     config.MCCConfig{Enabled: true, GeocoderURL: meta.server.URL},
 			Storage: config.StorageConfig{LocalPath: t.TempDir()},
 		},
 	}
@@ -130,12 +134,32 @@ func TestMCC_TextSendsMenu(t *testing.T) {
 	assert.Contains(t, body, "mcc_sewage")
 }
 
-func TestMCC_ButtonProvisionsFlowOnceAndSendsForm(t *testing.T) {
+func TestMCC_ButtonAsksForLocation(t *testing.T) {
+	app, meta, account, contact := newMCCTestApp(t)
+
+	click := ExtractedMessage{Type: "button_reply", ButtonID: "mcc_sewage", Text: "Sewage / Drainage"}
+	require.True(t, app.handleMCCMessage(account, contact, "wamid.in1", click))
+
+	body := meta.lastMessageBody()
+	assert.Contains(t, body, `"type":"location_request_message"`)
+	assert.Contains(t, body, `"name":"send_location"`)
+	assert.Zero(t, meta.count("POST /v18.0/"+account.BusinessID+"/flows"), "form not sent yet")
+
+	var session models.MCCSession
+	require.NoError(t, app.DB.Where("contact_id = ?", contact.ID).First(&session).Error)
+	assert.Equal(t, models.MCCCategorySewage, session.Category)
+	assert.Equal(t, models.MCCStageAwaitingLocation, session.Stage)
+}
+
+func TestMCC_LocationPrefillsAddressAndProvisionsFlowOnce(t *testing.T) {
 	app, meta, account, contact := newMCCTestApp(t)
 	mccPublishTried = sync.Map{}
 
 	click := ExtractedMessage{Type: "button_reply", ButtonID: "mcc_sewage", Text: "Sewage / Drainage"}
+	location := ExtractedMessage{Type: "location", Text: `{"latitude":12.8698,"longitude":74.8430}`}
 	require.True(t, app.handleMCCMessage(account, contact, "wamid.in1", click))
+	require.True(t, app.handleMCCMessage(account, contact, "wamid.loc1", location))
+	assert.Equal(t, 1, meta.count("GET /reverse"), "location reverse geocoded")
 
 	assert.Equal(t, 1, meta.count("POST /v18.0/"+account.BusinessID+"/flows"), "flow created")
 	assert.Equal(t, 1, meta.count("POST /v18.0/meta-flow-1/assets"), "flow JSON uploaded")
@@ -151,19 +175,60 @@ func TestMCC_ButtonProvisionsFlowOnceAndSendsForm(t *testing.T) {
 	assert.Contains(t, body, `"screen":"SEWAGE_COMPLAINT"`)
 	assert.Contains(t, body, `"flow_token":"mcc:sewage:`)
 	assert.NotContains(t, body, `"mode":"draft"`)
+	assert.Contains(t, body, `"data":{"address":"Hampankatta, Mangaluru, Dakshina Kannada, Karnataka, 575001"}`)
 
-	// Second click reuses the stored flow.
+	var session models.MCCSession
+	require.NoError(t, app.DB.Where("contact_id = ?", contact.ID).First(&session).Error)
+	assert.Equal(t, models.MCCStageFormSent, session.Stage)
+	require.NotNil(t, session.Latitude)
+	assert.InDelta(t, 12.8698, *session.Latitude, 1e-9)
+	assert.Contains(t, body, session.FlowToken)
+
+	// A second complaint reuses the stored flow.
 	require.True(t, app.handleMCCMessage(account, contact, "wamid.in2", click))
+	require.True(t, app.handleMCCMessage(account, contact, "wamid.loc2", location))
 	assert.Equal(t, 1, meta.count("POST /v18.0/"+account.BusinessID+"/flows"), "flow not recreated")
+}
+
+func TestMCC_SkipLocationSendsBlankForm(t *testing.T) {
+	app, meta, account, contact := newMCCTestApp(t)
+
+	require.True(t, app.handleMCCMessage(account, contact, "wamid.in1",
+		ExtractedMessage{Type: "button_reply", ButtonID: "mcc_solid_waste", Text: "Garbage / Waste"}))
+	require.True(t, app.handleMCCMessage(account, contact, "wamid.in2", ExtractedMessage{Type: "text", Text: "skip"}))
+
+	body := meta.lastMessageBody()
+	assert.Contains(t, body, `"screen":"GARBAGE_COMPLAINT"`)
+	assert.Contains(t, body, `"data":{"address":""}`)
+	assert.Zero(t, meta.count("GET /reverse"))
+
+	// Once the form is out, text goes back to the menu.
+	require.True(t, app.handleMCCMessage(account, contact, "wamid.in3", ExtractedMessage{Type: "text", Text: "hi"}))
+	assert.Contains(t, meta.lastMessageBody(), "mcc_sewage")
+}
+
+func TestMCC_LocationWithoutPendingFormSendsMenu(t *testing.T) {
+	app, meta, account, contact := newMCCTestApp(t)
+	require.True(t, app.handleMCCMessage(account, contact, "wamid.loc", ExtractedMessage{Type: "location", Text: `{"latitude":1,"longitude":2}`}))
+	assert.Contains(t, meta.lastMessageBody(), "mcc_solid_waste")
+	assert.Zero(t, meta.count("GET /reverse"))
 }
 
 func TestMCC_FlowReplySavesGrievanceOnce(t *testing.T) {
 	app, meta, account, contact := newMCCTestApp(t)
 
+	token := "mcc:solid_waste:" + uuid.NewString()
+	lat, lon := 12.8698, 74.8430
+	require.NoError(t, app.DB.Create(&models.MCCSession{
+		ContactID: contact.ID, OrganizationID: account.OrganizationID,
+		Category: models.MCCCategorySolidWaste, Stage: models.MCCStageFormSent, FlowToken: token,
+		Latitude: &lat, Longitude: &lon, DetectedAddress: "Hampankatta, Mangaluru",
+	}).Error)
+
 	reply := ExtractedMessage{
 		Type: "nfm_reply",
 		FlowResponseData: map[string]any{
-			"flow_token":     "mcc:solid_waste:" + uuid.NewString(),
+			"flow_token":     token,
 			"complaint_type": "garbage_burning",
 			"ward":           "ward_37",
 			"qr_code":        "MCC-H-778",
@@ -188,8 +253,20 @@ func TestMCC_FlowReplySavesGrievanceOnce(t *testing.T) {
 	assert.Equal(t, contact.ID, g.ContactID)
 	assert.Equal(t, "open", g.Status)
 	require.Len(t, g.PhotoURLs, 1, "photo downloaded and stored")
+	require.NotNil(t, g.Latitude)
+	assert.InDelta(t, lat, *g.Latitude, 1e-9)
+	assert.Equal(t, "Hampankatta, Mangaluru", g.DetectedAddress)
+	assert.Equal(t, "12 Hours", g.SLA)
+	require.NotNil(t, g.DueAt)
+	assert.WithinDuration(t, g.CreatedAt.Add(12*time.Hour), *g.DueAt, time.Minute)
 
-	assert.Contains(t, meta.lastMessageBody(), *g.ReferenceNo, "confirmation includes reference number")
+	confirmation := meta.lastMessageBody()
+	assert.Contains(t, confirmation, "Complaint ID: "+*g.ReferenceNo)
+	assert.Contains(t, confirmation, "Resolution Timeline: 12 Hours")
+
+	var sessions int64
+	app.DB.Model(&models.MCCSession{}).Where("contact_id = ?", contact.ID).Count(&sessions)
+	assert.Zero(t, sessions, "session cleared after submission")
 
 	// A webhook retry of the same message must not create a second row or reply.
 	sent := meta.count("POST /v18.0/" + account.PhoneID + "/messages")

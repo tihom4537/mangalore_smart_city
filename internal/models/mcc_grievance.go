@@ -37,6 +37,16 @@ type MCCGrievance struct {
 	Description       string     `gorm:"type:text" json:"description"`
 	PhotoURLs         JSONBArray `gorm:"type:jsonb;default:'[]'" json:"photo_urls"`
 
+	// Location the citizen shared before the form, and its reverse-geocoded
+	// address (what the form's Address field was pre-filled with).
+	Latitude        *float64 `json:"latitude"`
+	Longitude       *float64 `json:"longitude"`
+	DetectedAddress string   `gorm:"type:text" json:"detected_address"`
+
+	// Resolution timeline quoted to the citizen; DueAt is nil when unknown.
+	SLA   string     `gorm:"size:50" json:"sla"`
+	DueAt *time.Time `gorm:"index" json:"due_at"`
+
 	Status string `gorm:"size:20;default:'open';index" json:"status"` // open, in_progress, resolved, rejected
 
 	// WAMessageID of the nfm_reply; unique so webhook retries don't duplicate.
@@ -47,4 +57,28 @@ type MCCGrievance struct {
 
 func (MCCGrievance) TableName() string {
 	return "mcc_grievances"
+}
+
+// MCC conversation stages.
+const (
+	MCCStageAwaitingLocation = "awaiting_location"
+	MCCStageFormSent         = "form_sent"
+)
+
+// MCCSession tracks one citizen's in-progress complaint between WhatsApp
+// messages: the category picked, then the location shared for the form.
+type MCCSession struct {
+	ContactID       uuid.UUID `gorm:"type:uuid;primaryKey" json:"contact_id"`
+	OrganizationID  uuid.UUID `gorm:"type:uuid;index;not null" json:"organization_id"`
+	Category        string    `gorm:"size:20;not null" json:"category"`
+	Stage           string    `gorm:"size:20;not null" json:"stage"`
+	FlowToken       string    `gorm:"size:100" json:"flow_token"`
+	Latitude        *float64  `json:"latitude"`
+	Longitude       *float64  `json:"longitude"`
+	DetectedAddress string    `gorm:"type:text" json:"detected_address"`
+	UpdatedAt       time.Time `gorm:"autoUpdateTime" json:"updated_at"`
+}
+
+func (MCCSession) TableName() string {
+	return "mcc_sessions"
 }

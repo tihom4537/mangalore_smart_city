@@ -52,6 +52,28 @@ func TestMCCFlowJSONWithinMetaLimits(t *testing.T) {
 			}
 		}
 
+		required := map[string]bool{}
+		for _, c := range children {
+			comp := c.(map[string]any)
+			if name, _ := comp["name"].(string); name != "" {
+				required[name], _ = comp["required"].(bool)
+				if comp["type"] == "PhotoPicker" {
+					required[name] = comp["min-uploaded-photos"] == 1
+				}
+				if name == "address" && comp["init-value"] != "${data.address}" {
+					t.Errorf("%s: address not pre-filled from ${data.address}", form.MetaName)
+				}
+			}
+		}
+		for _, name := range []string{"complaint_type", "ward", "address", "description", "photos"} {
+			if !required[name] {
+				t.Errorf("%s: %s must be required", form.MetaName, name)
+			}
+		}
+		if _, ok := screen["data"].(map[string]any)["address"]; !ok {
+			t.Errorf("%s: screen must declare data.address", form.MetaName)
+		}
+
 		// Every payload key must reference a field on the screen.
 		footer := children[len(children)-1].(map[string]any)
 		payload := footer["on-click-action"].(map[string]any)["payload"].(map[string]any)
@@ -71,6 +93,29 @@ func TestMCCButtonTitlesFitWhatsApp(t *testing.T) {
 	}
 	if n := utf8.RuneCountInString(mccFlowCTA); n > 20 {
 		t.Errorf("flow CTA %q is %d chars, max 20", mccFlowCTA, n)
+	}
+}
+
+func TestMCCSLAs(t *testing.T) {
+	for _, form := range mccForms {
+		for _, typ := range form.Types {
+			if typ.SLA == "" {
+				t.Errorf("%s/%s: empty SLA", form.Category, typ.ID)
+			}
+			if form.Category == models.MCCCategorySolidWaste && (typ.SLA == mccSLAUnknown || typ.SLAHours <= 0) {
+				t.Errorf("%s: solid waste SLA missing", typ.ID)
+			}
+		}
+	}
+
+	msg := mccConfirmationText("MMP-SW-000007", "24 Hours")
+	for _, want := range []string{
+		"Dear Citizen, your grievance has been successfully registered.\n\nComplaint ID: MMP-SW-000007\nResolution Timeline: 24 Hours\n\n",
+		"Thank you for bringing this to our attention.",
+	} {
+		if !strings.Contains(msg, want) {
+			t.Errorf("confirmation missing %q:\n%s", want, msg)
+		}
 	}
 }
 
@@ -103,7 +148,8 @@ func TestBuildMCCGrievance(t *testing.T) {
 		g.ComplaintTypeCode != "roadside_dump" ||
 		g.ComplaintType != "Clearance of roadside garbage dump" ||
 		g.WardNo != 43 || g.WardName != "Kudroli" ||
-		g.QRCode != "QR-123" || g.Address != "Near Kudroli temple" || g.Status != "open" {
+		g.QRCode != "QR-123" || g.Address != "Near Kudroli temple" || g.Status != "open" ||
+		g.SLA != "24 Hours" || g.DueAt == nil {
 		t.Errorf("unexpected grievance: %+v", g)
 	}
 
@@ -112,7 +158,7 @@ func TestBuildMCCGrievance(t *testing.T) {
 		"complaint_type": "new_type",
 		"ward":           "somewhere",
 	})
-	if g.ComplaintType != "new_type" || g.WardNo != 0 || g.WardName != "somewhere" {
+	if g.ComplaintType != "new_type" || g.WardNo != 0 || g.WardName != "somewhere" || g.SLA != mccSLAUnknown || g.DueAt != nil {
 		t.Errorf("unexpected fallback mapping: %+v", g)
 	}
 }

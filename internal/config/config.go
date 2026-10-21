@@ -36,6 +36,9 @@ type Config struct {
 // (menu -> WhatsApp Flow form -> mcc_grievances table).
 type MCCConfig struct {
 	Enabled bool `koanf:"enabled"`
+	// GeocoderURL is the Nominatim-compatible reverse geocoding base URL
+	// used to turn a shared location into an address.
+	GeocoderURL string `koanf:"geocoder_url"`
 }
 
 type TTSConfig struct {

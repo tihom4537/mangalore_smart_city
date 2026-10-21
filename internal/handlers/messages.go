@@ -67,12 +67,13 @@ type OutgoingMessageRequest struct {
 	ButtonURLParams     map[string]string // Button index (as string) -> dynamic URL param value
 
 	// WhatsApp Flow messages
-	FlowID          string // Meta Flow ID
-	FlowHeader      string // Optional header text for flow
-	FlowCTA         string // CTA button text (max 20 chars)
-	FlowToken       string // Unique token for flow response tracking
-	FlowFirstScreen string // First screen name to navigate to
-	FlowMode        string // "draft" to send an unpublished flow; empty for published
+	FlowID          string         // Meta Flow ID
+	FlowHeader      string         // Optional header text for flow
+	FlowCTA         string         // CTA button text (max 20 chars)
+	FlowToken       string         // Unique token for flow response tracking
+	FlowFirstScreen string         // First screen name to navigate to
+	FlowMode        string         // "draft" to send an unpublished flow; empty for published
+	FlowData        map[string]any // Initial data for the first screen (${data.*})
 
 	// Reply context
 	ReplyToMessage *models.Message
@@ -198,6 +199,8 @@ func (a *App) SendOutgoingMessage(ctx context.Context, req OutgoingMessageReques
 				return a.WhatsApp.SendCTAURLButton(sendCtx, waAccount, rcpt, req.BodyText, req.ButtonText, req.URL)
 			case "voice_call":
 				return a.WhatsApp.SendVoiceCallButton(sendCtx, waAccount, rcpt, req.BodyText, req.DisplayText, req.TTLMinutes, req.VoiceCallPayload)
+			case "location_request":
+				return a.WhatsApp.SendLocationRequest(sendCtx, waAccount, rcpt, req.BodyText)
 			default: // "button" or "list"
 				return a.WhatsApp.SendInteractiveButtons(sendCtx, waAccount, rcpt, req.BodyText, req.Buttons)
 			}
@@ -227,7 +230,7 @@ func (a *App) SendOutgoingMessage(ctx context.Context, req OutgoingMessageReques
 			if req.FlowID == "" {
 				return "", fmt.Errorf("flow ID is required for flow messages")
 			}
-			return a.WhatsApp.SendFlowMessageWithMode(sendCtx, waAccount, rcpt, req.FlowID, req.FlowHeader, req.BodyText, req.FlowCTA, req.FlowToken, req.FlowFirstScreen, req.FlowMode)
+			return a.WhatsApp.SendFlowMessageWithData(sendCtx, waAccount, rcpt, req.FlowID, req.FlowHeader, req.BodyText, req.FlowCTA, req.FlowToken, req.FlowFirstScreen, req.FlowMode, req.FlowData)
 
 		default:
 			return "", fmt.Errorf("unsupported message type: %s", req.Type)
@@ -389,6 +392,11 @@ func (a *App) buildInteractiveData(req OutgoingMessageRequest) models.JSONB {
 			"body":        req.BodyText,
 			"button_text": req.ButtonText,
 			"url":         req.URL,
+		}
+	case "location_request":
+		return models.JSONB{
+			"type": "location_request",
+			"body": req.BodyText,
 		}
 	case "voice_call":
 		// Don't store the payload — it carries server-only context (the

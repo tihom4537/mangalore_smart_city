@@ -2,21 +2,28 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/google/uuid"
 	"github.com/shridarpatil/whatomate/internal/models"
+	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
 
 // Mangaluru Mahanagara Palike grievance bot.
 //
 //	any text   -> menu (Garbage / Sewage reply buttons)
-//	button     -> WhatsApp Flow form for that category
-//	nfm_reply  -> row in mcc_grievances + confirmation with reference number
+//	button     -> "Send location" request for that category
+//	location   -> WhatsApp Flow form, Address pre-filled from the location
+//	"skip"     -> the same form without a pre-filled address
+//	nfm_reply  -> row in mcc_grievances + confirmation with Complaint ID / SLA
 //
+// The step between messages is kept in mcc_sessions (one row per contact).
 // The two Flows are created and published on Meta on first use and recorded
 // in whatsapp_flows, so they also show up in the Flows screen.
 
@@ -24,6 +31,8 @@ const (
 	mccFlowTokenPrefix = "mcc:"
 	mccFlowCategory    = "OTHER"
 	mccFlowCTA         = "Fill complaint form"
+	// mccSessionTTL bounds how long a picked category waits for a location.
+	mccSessionTTL = 30 * time.Minute
 )
 
 var (
@@ -63,14 +72,116 @@ func (a *App) handleMCCMessage(account *models.WhatsAppAccount, contact *models.
 		if form == nil {
 			return false
 		}
-		a.sendMCCForm(account, contact, form)
+		a.requestMCCLocation(account, contact, form)
+		return true
+
+	case "location":
+		if form := a.pendingMCCForm(contact); form != nil {
+			a.sendMCCForm(account, contact, form, a.resolveMCCLocation(extracted.Text))
+			return true
+		}
+		a.sendMCCMenu(account, contact)
 		return true
 
 	case "text":
+		// Any text while a location is awaited means "skip".
+		if form := a.pendingMCCForm(contact); form != nil {
+			a.sendMCCForm(account, contact, form, nil)
+			return true
+		}
 		a.sendMCCMenu(account, contact)
 		return true
 	}
 	return false
+}
+
+// pendingMCCForm returns the form a contact picked and is still sharing a
+// location for, or nil when none is pending.
+func (a *App) pendingMCCForm(contact *models.Contact) *mccForm {
+	var session models.MCCSession
+	if err := a.DB.Where("contact_id = ?", contact.ID).First(&session).Error; err != nil {
+		return nil
+	}
+	if session.Stage != models.MCCStageAwaitingLocation || time.Since(session.UpdatedAt) > mccSessionTTL {
+		return nil
+	}
+	return mccFormByCategory(session.Category)
+}
+
+func (a *App) saveMCCSession(session *models.MCCSession) {
+	session.UpdatedAt = time.Now()
+	err := a.DB.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "contact_id"}},
+		UpdateAll: true,
+	}).Create(session).Error
+	if err != nil {
+		a.Log.Error("Failed to save MCC session", "error", err, "contact_id", session.ContactID)
+	}
+}
+
+// requestMCCLocation asks for the citizen's location before sending the
+// form. If the request can't be sent the form goes out straight away.
+func (a *App) requestMCCLocation(account *models.WhatsAppAccount, contact *models.Contact, form *mccForm) {
+	a.saveMCCSession(&models.MCCSession{
+		ContactID:      contact.ID,
+		OrganizationID: account.OrganizationID,
+		Category:       form.Category,
+		Stage:          models.MCCStageAwaitingLocation,
+	})
+
+	_, err := a.SendOutgoingMessage(context.Background(), OutgoingMessageRequest{
+		Account:         account,
+		Contact:         contact,
+		Type:            models.MessageTypeInteractive,
+		InteractiveType: "location_request",
+		BodyText: "📍 Please share your current location so we can fill in the complaint address for you.\n\n" +
+			"Tap *Send location* below, or type *skip* to enter the address yourself.",
+	}, ChatbotSendOptions())
+	if err != nil {
+		a.Log.Error("Failed to send MCC location request", "error", err, "contact", contact.PhoneNumber)
+		a.sendMCCForm(account, contact, form, nil)
+	}
+}
+
+// mccLocation is a shared location and the address it resolved to.
+type mccLocation struct {
+	Latitude  float64
+	Longitude float64
+	Address   string
+}
+
+// resolveMCCLocation parses an extracted location message and reverse
+// geocodes it. WhatsApp's own place name/address is the fallback.
+func (a *App) resolveMCCLocation(raw string) *mccLocation {
+	var in struct {
+		Latitude  float64 `json:"latitude"`
+		Longitude float64 `json:"longitude"`
+		Name      string  `json:"name"`
+		Address   string  `json:"address"`
+	}
+	if err := json.Unmarshal([]byte(raw), &in); err != nil {
+		a.Log.Warn("Unparseable MCC location", "error", err)
+		return nil
+	}
+	loc := &mccLocation{Latitude: in.Latitude, Longitude: in.Longitude}
+
+	ctx, cancel := context.WithTimeout(context.Background(), mccGeocodeTimeout)
+	defer cancel()
+	addr, err := a.reverseGeocodeMCC(ctx, in.Latitude, in.Longitude)
+	if err != nil {
+		a.Log.Warn("MCC reverse geocoding failed", "error", err, "lat", in.Latitude, "lon", in.Longitude)
+		addr = strings.Trim(strings.TrimSpace(in.Name)+", "+strings.TrimSpace(in.Address), ", ")
+	}
+	loc.Address = truncateRunes(addr, mccAddressMaxLen)
+	return loc
+}
+
+func truncateRunes(s string, n int) string {
+	r := []rune(s)
+	if len(r) <= n {
+		return s
+	}
+	return string(r[:n])
 }
 
 func (a *App) sendMCCMenu(account *models.WhatsAppAccount, contact *models.Contact) {
@@ -85,11 +196,26 @@ func (a *App) sendMCCMenu(account *models.WhatsAppAccount, contact *models.Conta
 	}
 }
 
-func (a *App) sendMCCForm(account *models.WhatsAppAccount, contact *models.Contact, form *mccForm) {
+// sendMCCForm sends the Flow form, pre-filling Address from loc when the
+// citizen shared a location, and remembers the location for the submission.
+func (a *App) sendMCCForm(account *models.WhatsAppAccount, contact *models.Contact, form *mccForm, loc *mccLocation) {
+	session := &models.MCCSession{
+		ContactID:      contact.ID,
+		OrganizationID: account.OrganizationID,
+		Category:       form.Category,
+		Stage:          models.MCCStageFormSent,
+		FlowToken:      fmt.Sprintf("%s%s:%s", mccFlowTokenPrefix, form.Category, uuid.NewString()),
+	}
+	if loc != nil {
+		session.Latitude, session.Longitude = &loc.Latitude, &loc.Longitude
+		session.DetectedAddress = loc.Address
+	}
+	a.saveMCCSession(session)
+
 	flow, err := a.ensureMCCFlow(account, form)
 	if err != nil {
 		a.Log.Error("MCC flow unavailable", "error", err, "form", form.MetaName)
-		_ = a.sendAndSaveTextMessage(account, contact, "Sorry, the complaint form is temporarily unavailable. Please try again in a little while.")
+		_ = a.sendAndSaveTextMessage(account, contact, mccFormUnavailableText)
 		return
 	}
 
@@ -105,14 +231,18 @@ func (a *App) sendMCCForm(account *models.WhatsAppAccount, contact *models.Conta
 		FlowHeader:      form.ScreenName,
 		BodyText:        "Tap the button below and fill in the details of your complaint.",
 		FlowCTA:         mccFlowCTA,
-		FlowToken:       fmt.Sprintf("%s%s:%s", mccFlowTokenPrefix, form.Category, uuid.NewString()),
+		FlowToken:       session.FlowToken,
 		FlowFirstScreen: form.ScreenID,
 		FlowMode:        mode,
+		FlowData:        map[string]any{"address": session.DetectedAddress},
 	}, ChatbotSendOptions())
 	if err != nil {
 		a.Log.Error("Failed to send MCC form", "error", err, "form", form.MetaName, "contact", contact.PhoneNumber)
+		_ = a.sendAndSaveTextMessage(account, contact, mccFormUnavailableText)
 	}
 }
+
+const mccFormUnavailableText = "Sorry, the complaint form is temporarily unavailable. Please try again in a little while."
 
 // ensureMCCFlow returns the Meta flow for form, creating, uploading and
 // publishing it the first time. Existing flows (in our DB or on Meta) are
@@ -209,6 +339,16 @@ func (a *App) saveMCCGrievance(account *models.WhatsAppAccount, contact *models.
 	g.RawResponse = models.JSONB(data)
 	g.PhotoURLs = a.downloadMCCPhotos(account, data["photos"])
 
+	var session models.MCCSession
+	err := a.DB.Where("contact_id = ? AND flow_token = ?", contact.ID, flowToken).First(&session).Error
+	switch {
+	case err == nil:
+		g.Latitude, g.Longitude = session.Latitude, session.Longitude
+		g.DetectedAddress = session.DetectedAddress
+	case !errors.Is(err, gorm.ErrRecordNotFound):
+		a.Log.Error("Failed to load MCC session", "error", err, "contact", contact.PhoneNumber)
+	}
+
 	res := a.DB.Clauses(clause.OnConflict{Columns: []clause.Column{{Name: "wa_message_id"}}, DoNothing: true}).Create(&g)
 	if res.Error != nil {
 		a.Log.Error("Failed to save MCC grievance", "error", res.Error, "contact", contact.PhoneNumber)
@@ -218,6 +358,7 @@ func (a *App) saveMCCGrievance(account *models.WhatsAppAccount, contact *models.
 	if res.RowsAffected == 0 {
 		return
 	}
+	a.DB.Where("contact_id = ? AND flow_token = ?", contact.ID, flowToken).Delete(&models.MCCSession{})
 
 	ref := fmt.Sprintf("%s%06d", form.RefPrefix, g.ID)
 	if err := a.DB.Model(&g).Update("reference_no", ref).Error; err != nil {
@@ -225,7 +366,7 @@ func (a *App) saveMCCGrievance(account *models.WhatsAppAccount, contact *models.
 	}
 	a.Log.Info("MCC grievance registered", "reference_no", ref, "category", g.Category, "ward", g.WardNo)
 
-	if err := a.sendAndSaveTextMessage(account, contact, mccConfirmationText(ref, &g)); err != nil {
+	if err := a.sendAndSaveTextMessage(account, contact, mccConfirmationText(ref, g.SLA)); err != nil {
 		a.Log.Error("Failed to send MCC confirmation", "error", err, "contact", contact.PhoneNumber)
 	}
 }
@@ -244,11 +385,16 @@ func buildMCCGrievance(form *mccForm, data map[string]any) models.MCCGrievance {
 		Address:     str("address"),
 		Description: str("description"),
 		Status:      "open",
+		SLA:         mccSLAUnknown,
 	}
 
 	typeID := str("complaint_type")
 	if t, ok := form.typeByID(typeID); ok {
-		g.ComplaintTypeCode, g.ComplaintType = t.ID, t.Label
+		g.ComplaintTypeCode, g.ComplaintType, g.SLA = t.ID, t.Label, t.SLA
+		if t.SLAHours > 0 {
+			due := time.Now().Add(time.Duration(t.SLAHours) * time.Hour)
+			g.DueAt = &due
+		}
 	} else {
 		g.ComplaintTypeCode, g.ComplaintType = typeID, typeID
 	}
@@ -294,15 +440,11 @@ func (a *App) downloadMCCPhotos(account *models.WhatsAppAccount, raw any) models
 	return paths
 }
 
-func mccConfirmationText(ref string, g *models.MCCGrievance) string {
-	area := g.WardName
-	if g.WardNo > 0 {
-		area = fmt.Sprintf("%s - %d", g.WardName, g.WardNo)
-	}
-	return fmt.Sprintf("✅ *Complaint registered*\n\n"+
-		"Complaint No: *%s*\n"+
-		"Type: %s\n"+
-		"Area: %s\n\n"+
-		"Please save this number for future reference. Send *hi* any time to register another complaint.",
-		ref, g.ComplaintType, area)
+func mccConfirmationText(complaintID, sla string) string {
+	return fmt.Sprintf("Dear Citizen, your grievance has been successfully registered.\n\n"+
+		"Complaint ID: %s\n"+
+		"Resolution Timeline: %s\n\n"+
+		"You can use your Complaint ID to track the status of your grievance. "+
+		"MCC will work towards resolving it within the stipulated timeline.\n\n"+
+		"Thank you for bringing this to our attention.", complaintID, sla)
 }
