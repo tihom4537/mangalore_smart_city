@@ -166,7 +166,7 @@ func TestMCC_LocationPrefillsAddressAndProvisionsFlowOnce(t *testing.T) {
 	assert.Equal(t, 1, meta.count("POST /v18.0/meta-flow-1/publish"), "flow published")
 
 	var flow models.WhatsAppFlow
-	require.NoError(t, app.DB.Where("whats_app_account = ? AND name = ?", account.Name, "MMP Sewage Complaint v1").First(&flow).Error)
+	require.NoError(t, app.DB.Where("whats_app_account = ? AND name = ?", account.Name, mccFormByCategory(models.MCCCategorySewage).MetaName).First(&flow).Error)
 	assert.Equal(t, "meta-flow-1", flow.MetaFlowID)
 	assert.Equal(t, "PUBLISHED", flow.Status)
 
