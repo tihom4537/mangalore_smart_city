@@ -50,7 +50,7 @@ func newMCCMetaMock(t *testing.T) *mccMetaMock {
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"messages": []map[string]string{{"id": "wamid.out_" + uuid.New().String()[:8]}},
 			})
-		case strings.HasSuffix(p, "/media-photo-1"):
+		case strings.HasSuffix(p, "/media-photo-1"), strings.HasSuffix(p, "/9007199254740993"):
 			_ = json.NewEncoder(w).Encode(map[string]any{"url": m.server.URL + "/cdn/photo-1"})
 		case p == "/reverse":
 			_ = json.NewEncoder(w).Encode(map[string]any{
@@ -275,6 +275,24 @@ func TestMCC_FlowReplySavesGrievanceOnce(t *testing.T) {
 	app.DB.Model(&models.MCCGrievance{}).Where("wa_message_id = ?", "wamid.flow1").Count(&n)
 	assert.EqualValues(t, 1, n)
 	assert.Equal(t, sent, meta.count("POST /v18.0/"+account.PhoneID+"/messages"), "no second confirmation")
+}
+
+// Meta sends PhotoPicker media IDs as JSON numbers; one above 2^53 must
+// survive exactly, so the raw response_json is what gets parsed.
+func TestMCC_FlowReplyNumericPhotoID(t *testing.T) {
+	app, meta, account, contact := newMCCTestApp(t)
+	raw := `{"flow_token":"mcc:sewage:` + uuid.NewString() + `","complaint_type":"manhole_overflow","ward":"ward_4",` +
+		`"address":"A","description":"D","photos":[{"id":9007199254740993,"mime_type":"image/jpeg","file_name":"p.jpg"}]}`
+	var lossy map[string]any
+	require.NoError(t, json.Unmarshal([]byte(raw), &lossy))
+
+	reply := ExtractedMessage{Type: "nfm_reply", FlowResponseData: lossy, FlowResponseJSON: raw}
+	require.True(t, app.handleMCCMessage(account, contact, "wamid.flow-num", reply))
+
+	assert.Equal(t, 1, meta.count("GET /v18.0/9007199254740993"), "exact media id fetched")
+	var g models.MCCGrievance
+	require.NoError(t, app.DB.Where("wa_message_id = ?", "wamid.flow-num").First(&g).Error)
+	assert.Len(t, g.PhotoURLs, 1)
 }
 
 func TestMCC_NonMCCFlowReplyFallsThrough(t *testing.T) {

@@ -1393,6 +1393,7 @@ type ExtractedMessage struct {
 	Media            *MediaInfo
 	ButtonID         string         // used by chatbot routing only
 	FlowResponseData map[string]any // used by chatbot routing only
+	FlowResponseJSON string         // raw nfm_reply response_json
 }
 
 // extractMessageContent walks an IncomingTextMessage and returns the derived
@@ -1428,6 +1429,7 @@ func (a *App) extractMessageContent(ctx context.Context, msg IncomingTextMessage
 			extracted.Type = "nfm_reply"
 			// Parse the response JSON to extract form data
 			if msg.Interactive.NFMReply.ResponseJSON != "" {
+				extracted.FlowResponseJSON = msg.Interactive.NFMReply.ResponseJSON
 				var responseData map[string]any
 				if err := json.Unmarshal([]byte(msg.Interactive.NFMReply.ResponseJSON), &responseData); err != nil {
 					a.Log.Error("Failed to parse flow response JSON", "error", err, "response_json", msg.Interactive.NFMReply.ResponseJSON)

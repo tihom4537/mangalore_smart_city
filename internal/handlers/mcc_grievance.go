@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -64,7 +65,7 @@ func (a *App) handleMCCMessage(account *models.WhatsAppAccount, contact *models.
 			a.Log.Warn("MCC flow reply with unknown category", "flow_token", token)
 			return false
 		}
-		a.saveMCCGrievance(account, contact, waMessageID, form, token, extracted.FlowResponseData)
+		a.saveMCCGrievance(account, contact, waMessageID, form, token, mccFlowResponse(extracted))
 		return true
 
 	case "button_reply":
@@ -93,6 +94,22 @@ func (a *App) handleMCCMessage(account *models.WhatsAppAccount, contact *models.
 		return true
 	}
 	return false
+}
+
+// mccFlowResponse re-decodes the raw response_json keeping numbers exact:
+// Meta sends PhotoPicker media IDs as JSON numbers, which can exceed what
+// float64 holds precisely.
+func mccFlowResponse(extracted ExtractedMessage) map[string]any {
+	if extracted.FlowResponseJSON == "" {
+		return extracted.FlowResponseData
+	}
+	dec := json.NewDecoder(strings.NewReader(extracted.FlowResponseJSON))
+	dec.UseNumber()
+	var data map[string]any
+	if err := dec.Decode(&data); err != nil {
+		return extracted.FlowResponseData
+	}
+	return data
 }
 
 // pendingMCCForm returns the form a contact picked and is still sharing a
@@ -418,9 +435,9 @@ func (a *App) downloadMCCPhotos(account *models.WhatsAppAccount, raw any) models
 	waAccount := a.toWhatsAppAccount(account)
 	for _, item := range items {
 		m, _ := item.(map[string]any)
-		mediaID, _ := m["id"].(string)
+		mediaID := mccMediaID(m["id"])
 		if mediaID == "" {
-			mediaID, _ = m["media_id"].(string)
+			mediaID = mccMediaID(m["media_id"])
 		}
 		if mediaID == "" {
 			a.Log.Warn("MCC photo without media id", "photo", m)
@@ -438,6 +455,19 @@ func (a *App) downloadMCCPhotos(account *models.WhatsAppAccount, raw any) models
 		paths = append(paths, path)
 	}
 	return paths
+}
+
+// mccMediaID accepts a media ID sent as a string or a JSON number.
+func mccMediaID(v any) string {
+	switch id := v.(type) {
+	case string:
+		return id
+	case json.Number:
+		return id.String()
+	case float64:
+		return strconv.FormatFloat(id, 'f', -1, 64)
+	}
+	return ""
 }
 
 func mccConfirmationText(complaintID, sla string) string {
