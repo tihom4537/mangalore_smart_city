@@ -34,6 +34,9 @@ const (
 	mccFlowCTA         = "Fill complaint form"
 	// mccSessionTTL bounds how long a picked category waits for a location.
 	mccSessionTTL = 30 * time.Minute
+	// mccActionTTL bounds how long a supervisor's action details or a
+	// citizen's reopen reason are awaited.
+	mccActionTTL = 24 * time.Hour
 )
 
 var (
@@ -47,6 +50,10 @@ var (
 // handleMCCMessage routes an inbound message through the grievance bot.
 // It returns true when the message was handled and normal chatbot
 // processing should be skipped.
+//
+// Besides the citizen filing flow it serves two more conversations keyed
+// by the same per-contact session: a supervisor closing an assigned
+// complaint (mcc_workflow.go) and a citizen reopening a resolved one.
 func (a *App) handleMCCMessage(account *models.WhatsAppAccount, contact *models.Contact, waMessageID string, extracted ExtractedMessage) bool {
 	if !a.Config.MCC.Enabled {
 		return false
@@ -69,6 +76,9 @@ func (a *App) handleMCCMessage(account *models.WhatsAppAccount, contact *models.
 		return true
 
 	case "button_reply":
+		if a.handleMCCActionButton(account, contact, extracted.ButtonID) {
+			return true
+		}
 		form := mccFormByButton(extracted.ButtonID)
 		if form == nil {
 			return false
@@ -81,19 +91,89 @@ func (a *App) handleMCCMessage(account *models.WhatsAppAccount, contact *models.
 			a.sendMCCForm(account, contact, form, a.resolveMCCLocation(extracted.Text))
 			return true
 		}
-		a.sendMCCMenu(account, contact)
+		a.sendMCCHome(account, contact)
 		return true
 
-	case "text":
-		// Any text while a location is awaited means "skip".
-		if form := a.pendingMCCForm(contact); form != nil {
-			a.sendMCCForm(account, contact, form, nil)
+	case "text", "image":
+		if session := a.loadMCCSession(contact); session != nil {
+			switch session.Stage {
+			case models.MCCStageAwaitingAction:
+				a.receiveMCCActionDetails(account, contact, session, extracted)
+				return true
+			case models.MCCStageAwaitingReopenReason:
+				a.receiveMCCReopenReason(account, contact, session, extracted)
+				return true
+			case models.MCCStageAwaitingLocation:
+				// Any text while a location is awaited means "skip".
+				if form := mccFormByCategory(session.Category); form != nil && extracted.Type == "text" {
+					a.sendMCCForm(account, contact, form, nil)
+					return true
+				}
+			}
+		}
+		if extracted.Type == "text" && strings.EqualFold(strings.TrimSpace(extracted.Text), mccNewComplaintKeyword) {
+			a.sendMCCMenu(account, contact)
 			return true
 		}
-		a.sendMCCMenu(account, contact)
+		a.sendMCCHome(account, contact)
 		return true
 	}
 	return false
+}
+
+// mccNewComplaintKeyword lets a supervisor reach the citizen menu, which
+// otherwise gives way to their complaint inbox.
+const mccNewComplaintKeyword = "new"
+
+// sendMCCHome sends a supervisor their inbox and anyone else the menu.
+func (a *App) sendMCCHome(account *models.WhatsAppAccount, contact *models.Contact) {
+	if a.isMCCSupervisor(account.OrganizationID, contact) {
+		a.sendMCCSupervisorInbox(account, contact)
+		return
+	}
+	a.sendMCCMenu(account, contact)
+}
+
+// loadMCCSession returns the contact's session unless it has expired for
+// its stage. Filing stages time out quickly; a supervisor writing up an
+// action or a citizen giving a reopen reason gets a day.
+func (a *App) loadMCCSession(contact *models.Contact) *models.MCCSession {
+	var session models.MCCSession
+	if err := a.DB.Where("contact_id = ?", contact.ID).First(&session).Error; err != nil {
+		return nil
+	}
+	ttl := mccSessionTTL
+	if session.Stage == models.MCCStageAwaitingAction || session.Stage == models.MCCStageAwaitingReopenReason {
+		ttl = mccActionTTL
+	}
+	if time.Since(session.UpdatedAt) > ttl {
+		return nil
+	}
+	return &session
+}
+
+// pendingMCCForm returns the form a contact picked and is still sharing a
+// location for, or nil when none is pending.
+func (a *App) pendingMCCForm(contact *models.Contact) *mccForm {
+	session := a.loadMCCSession(contact)
+	if session == nil || session.Stage != models.MCCStageAwaitingLocation {
+		return nil
+	}
+	return mccFormByCategory(session.Category)
+}
+
+func (a *App) saveMCCSession(session *models.MCCSession) {
+	session.UpdatedAt = time.Now()
+	if session.PendingPhotos == nil {
+		session.PendingPhotos = models.JSONBArray{}
+	}
+	err := a.DB.Clauses(clause.OnConflict{
+		Columns:   []clause.Column{{Name: "contact_id"}},
+		UpdateAll: true,
+	}).Create(session).Error
+	if err != nil {
+		a.Log.Error("Failed to save MCC session", "error", err, "contact_id", session.ContactID)
+	}
 }
 
 // mccFlowResponse re-decodes the raw response_json keeping numbers exact:
@@ -110,30 +190,6 @@ func mccFlowResponse(extracted ExtractedMessage) map[string]any {
 		return extracted.FlowResponseData
 	}
 	return data
-}
-
-// pendingMCCForm returns the form a contact picked and is still sharing a
-// location for, or nil when none is pending.
-func (a *App) pendingMCCForm(contact *models.Contact) *mccForm {
-	var session models.MCCSession
-	if err := a.DB.Where("contact_id = ?", contact.ID).First(&session).Error; err != nil {
-		return nil
-	}
-	if session.Stage != models.MCCStageAwaitingLocation || time.Since(session.UpdatedAt) > mccSessionTTL {
-		return nil
-	}
-	return mccFormByCategory(session.Category)
-}
-
-func (a *App) saveMCCSession(session *models.MCCSession) {
-	session.UpdatedAt = time.Now()
-	err := a.DB.Clauses(clause.OnConflict{
-		Columns:   []clause.Column{{Name: "contact_id"}},
-		UpdateAll: true,
-	}).Create(session).Error
-	if err != nil {
-		a.Log.Error("Failed to save MCC session", "error", err, "contact_id", session.ContactID)
-	}
 }
 
 // requestMCCLocation asks for the citizen's location before sending the
@@ -386,6 +442,9 @@ func (a *App) saveMCCGrievance(account *models.WhatsAppAccount, contact *models.
 	if err := a.sendAndSaveTextMessage(account, contact, mccConfirmationText(ref, g.SLA)); err != nil {
 		a.Log.Error("Failed to send MCC confirmation", "error", err, "contact", contact.PhoneNumber)
 	}
+
+	g.ReferenceNo = &ref
+	a.assignMCCGrievance(account, &g)
 }
 
 // buildMCCGrievance maps the Flow's response_json onto a grievance row.
@@ -401,8 +460,9 @@ func buildMCCGrievance(form *mccForm, data map[string]any) models.MCCGrievance {
 		QRCode:      str("qr_code"),
 		Address:     str("address"),
 		Description: str("description"),
-		Status:      "open",
+		Status:      models.MCCStatusOpen,
 		SLA:         mccSLAUnknown,
+		History:     models.JSONBArray{mccHistoryEntry(models.MCCStatusOpen, "citizen", "")},
 	}
 
 	typeID := str("complaint_type")

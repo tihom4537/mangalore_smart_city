@@ -65,6 +65,7 @@ type OutgoingMessageRequest struct {
 	HeaderMediaID       string            // WhatsApp media ID for template header (IMAGE/VIDEO/DOCUMENT)
 	HeaderMediaFilename string            // Filename — required by Meta for DOCUMENT headers
 	ButtonURLParams     map[string]string // Button index (as string) -> dynamic URL param value
+	QuickReplyPayloads  map[string]string // Button index (as string) -> payload echoed back when a QUICK_REPLY button is tapped
 
 	// WhatsApp Flow messages
 	FlowID          string         // Meta Flow ID
@@ -224,6 +225,7 @@ func (a *App) SendOutgoingMessage(ctx context.Context, req OutgoingMessageReques
 			// Add URL/COPY_CODE button components with dynamic params
 			buttonComponents := whatsapp.ButtonURLParamsToComponents(req.ButtonURLParams, req.Template.Buttons)
 			components = append(components, buttonComponents...)
+			components = append(components, whatsapp.QuickReplyPayloadComponents(req.QuickReplyPayloads, req.Template.Buttons)...)
 			return a.WhatsApp.SendTemplateMessage(sendCtx, waAccount, rcpt, req.Template.Name, req.Template.Language, components)
 
 		case models.MessageTypeFlow:

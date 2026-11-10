@@ -119,6 +119,7 @@ func GetMigrationModels() []MigrationModel {
 		// Mangaluru Mahanagara Palike grievances
 		{"MCCGrievance", &models.MCCGrievance{}},
 		{"MCCSession", &models.MCCSession{}},
+		{"MCCSupervisor", &models.MCCSupervisor{}},
 	}
 }
 

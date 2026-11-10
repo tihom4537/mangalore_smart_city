@@ -131,6 +131,7 @@ func runMigrations(db *gorm.DB) error {
 		// Mangaluru Mahanagara Palike grievances
 		&models.MCCGrievance{},
 		&models.MCCSession{},
+		&models.MCCSupervisor{},
 	)
 }
 
@@ -161,6 +162,7 @@ func cleanupTables(db *gorm.DB) {
 		// MCC grievances
 		"mcc_grievances",
 		"mcc_sessions",
+		"mcc_supervisors",
 		// WhatsApp tables
 		"messages",
 		"tags",

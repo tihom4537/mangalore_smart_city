@@ -84,6 +84,7 @@ const (
 	ResourceIVRFlows                = "ivr_flows"
 	ResourceCallTransfers           = "call_transfers"
 	ResourceOutgoingCalls           = "outgoing_calls"
+	ResourceMCC                     = "mcc"
 	ResourceAuditLogs               = "audit_logs"
 )
 
@@ -233,6 +234,11 @@ func DefaultPermissions() []Permission {
 		{Resource: ResourceOutgoingCalls, Action: ActionRead, Description: "View outgoing call status"},
 		{Resource: ResourceOutgoingCalls, Action: ActionWrite, Description: "Initiate outgoing calls"},
 
+		// MCC grievances
+		{Resource: ResourceMCC, Action: ActionRead, Description: "View MCC grievances and supervisors"},
+		{Resource: ResourceMCC, Action: ActionWrite, Description: "Manage MCC supervisors and reassign grievances"},
+		{Resource: ResourceMCC, Action: ActionDelete, Description: "Delete MCC supervisors"},
+
 		// Audit Logs
 		{Resource: ResourceAuditLogs, Action: ActionRead, Description: "View audit logs"},
 	}
@@ -287,6 +293,8 @@ func SystemRolePermissions() map[string][]string {
 		"ivr_flows:read", "ivr_flows:write", "ivr_flows:delete",
 		"call_transfers:read", "call_transfers:write",
 		"outgoing_calls:read", "outgoing_calls:write",
+		// MCC grievances
+		"mcc:read", "mcc:write", "mcc:delete",
 	}
 
 	agentPermissions := []string{

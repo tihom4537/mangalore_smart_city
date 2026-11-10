@@ -527,6 +527,37 @@ func AutoButtonComponents(templateButtons []any) []map[string]any {
 	return components
 }
 
+// QuickReplyPayloadComponents builds the button components that give a
+// template's QUICK_REPLY buttons a per-message payload. The tap comes back
+// on the webhook as a "button" message whose payload is this value, so a
+// sender can route the reply (e.g. "mcc_ok:42"). Indices that are not
+// QUICK_REPLY buttons on the template are ignored.
+func QuickReplyPayloadComponents(payloads map[string]string, templateButtons []any) []map[string]any {
+	if len(payloads) == 0 {
+		return nil
+	}
+	components := make([]map[string]any, 0, len(payloads))
+	for _, index := range sortParamKeys(payloads, false) {
+		i, err := strconv.Atoi(index)
+		if err != nil || i < 0 || i >= len(templateButtons) {
+			continue
+		}
+		btn, _ := templateButtons[i].(map[string]any)
+		if t, _ := btn["type"].(string); !strings.EqualFold(t, "QUICK_REPLY") {
+			continue
+		}
+		components = append(components, map[string]any{
+			"type":     "button",
+			"sub_type": "quick_reply",
+			"index":    index,
+			"parameters": []map[string]any{
+				{"type": "payload", "payload": payloads[index]},
+			},
+		})
+	}
+	return components
+}
+
 // ButtonURLParamsToComponents converts button parameters to WhatsApp API button components.
 // buttonParams maps button index (as string like "0", "1") to the dynamic parameter value.
 // templateButtons is the JSONB buttons array from the template, used to determine button type.

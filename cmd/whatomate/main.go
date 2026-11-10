@@ -643,6 +643,16 @@ func setupRoutes(g *fastglue.Fastglue, app *handlers.App, lo logf.Logger, basePa
 	g.PUT("/api/tags/{name}", app.UpdateTag)
 	g.DELETE("/api/tags/{name}", app.DeleteTag)
 
+	// Mangaluru Mahanagara Palike grievances
+	g.GET("/api/mcc/supervisors", app.ListMCCSupervisors)
+	g.POST("/api/mcc/supervisors", app.CreateMCCSupervisor)
+	g.PUT("/api/mcc/supervisors/{id}", app.UpdateMCCSupervisor)
+	g.DELETE("/api/mcc/supervisors/{id}", app.DeleteMCCSupervisor)
+	g.GET("/api/mcc/grievances", app.ListMCCGrievances)
+	g.GET("/api/mcc/grievances/{id}", app.GetMCCGrievance)
+	g.PUT("/api/mcc/grievances/{id}/assign", app.AssignMCCGrievance)
+	g.PUT("/api/mcc/grievances/{id}/resolve", app.ResolveMCCGrievance)
+
 	// Messages
 	g.GET("/api/contacts/{id}/messages", app.GetMessages)
 	g.POST("/api/contacts/{id}/messages", app.SendMessage)

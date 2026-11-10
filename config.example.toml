@@ -143,6 +143,18 @@ udp_port_max = 10100          # WebRTC UDP port range end
 enabled = false
 # Reverse geocoder for the shared location (Nominatim API; default: public OSM instance)
 # geocoder_url = "https://nominatim.openstreetmap.org"
+# Complaints are auto-assigned to supervisors (POST /api/mcc/supervisors) by
+# ward and category and sent to them on WhatsApp. Supervisors who have not
+# messaged the number in the last 24h can only receive an approved template:
+# name it here, with positional body params {{1}} complaint ID, {{2}} type,
+# {{3}} ward, {{4}} address, {{5}} details, {{6}} resolution timeline.
+# supervisor_template = "mcc_new_complaint"
+# Likewise for the closure notice to a citizen whose window has lapsed:
+# body params {{1}} complaint ID, {{2}} type, {{3}} action taken, and two
+# QUICK_REPLY buttons (Satisfied, Reopen).
+# citizen_closure_template = "mcc_complaint_resolved"
+# Map link format for the citizen's shared location (lat, lon)
+# maps_url = "https://www.google.com/maps?q=%f,%f"
 
 # Default admin credentials (only used during initial setup when no users exist)
 [default_admin]
