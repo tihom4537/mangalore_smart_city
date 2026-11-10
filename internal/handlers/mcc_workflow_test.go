@@ -51,9 +51,11 @@ func createMCCSupervisor(t *testing.T, app *App, orgID uuid.UUID, name, phone st
 }
 
 // fileMCCGrievance submits a garbage complaint for ward 37 with one photo
-// and returns the stored row.
+// and returns the stored row. The test database is not wiped between
+// tests and wa_message_id is unique, so the ID is made unique here.
 func fileMCCGrievance(t *testing.T, app *App, account *models.WhatsAppAccount, contact *models.Contact, waMessageID string) *models.MCCGrievance {
 	t.Helper()
+	waMessageID += "-" + uuid.NewString()[:8]
 	lat, lon := 12.8698, 74.8430
 	token := "mcc:solid_waste:" + uuid.NewString()
 	require.NoError(t, app.DB.Create(&models.MCCSession{
@@ -98,10 +100,6 @@ func TestMCC_AutoAssignNotifiesWardSupervisor(t *testing.T) {
 
 	g := fileMCCGrievance(t, app, account, citizen, "wamid.flow1")
 
-	var sups []models.MCCSupervisor
-	app.DB.Find(&sups)
-	t.Logf("grievance org=%s ward=%d category=%q notify_error=%q; supervisors=%+v; account org=%s",
-		g.OrganizationID, g.WardNo, g.Category, g.NotifyError, sups, account.OrganizationID)
 	assert.Equal(t, models.MCCStatusAssigned, g.Status)
 	require.NotNil(t, g.SupervisorID)
 	assert.Equal(t, sup.ID, *g.SupervisorID, "most specific supervisor wins over the catch-all")
