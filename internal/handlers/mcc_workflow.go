@@ -240,12 +240,13 @@ func (a *App) sendMCCComplaintCard(account *models.WhatsAppAccount, contact *mod
 			a.Log.Warn("MCC photo unreadable", "error", err, "path", path)
 			continue
 		}
+		// A photo that Meta rejects must not stop the complaint itself.
 		if err := a.sendMCCMessage(OutgoingMessageRequest{
 			Account: account, Contact: contact, Type: models.MessageTypeImage,
-			MediaData: data, MediaMimeType: mime, MediaURL: path,
+			MediaData: data, MediaMimeType: mime, MediaURL: path, MediaFilename: filepath.Base(path),
 			Caption: fmt.Sprintf("%s – photo %d/%d", ref, i+1, len(g.PhotoURLs)),
 		}); err != nil {
-			return fmt.Errorf("photo %d: %w", i+1, err)
+			a.Log.Error("Failed to send MCC photo", "error", err, "grievance", g.ID, "path", path)
 		}
 	}
 
@@ -600,7 +601,7 @@ func (a *App) notifyMCCCitizenClosure(account *models.WhatsAppAccount, g *models
 			}
 			_ = a.sendMCCMessage(OutgoingMessageRequest{
 				Account: account, Contact: citizen, Type: models.MessageTypeImage,
-				MediaData: data, MediaMimeType: mime, MediaURL: path,
+				MediaData: data, MediaMimeType: mime, MediaURL: path, MediaFilename: filepath.Base(path),
 				Caption: fmt.Sprintf("%s – work completed, photo %d/%d", mccRef(g), i+1, len(g.ActionPhotoURLs)),
 			})
 		}
