@@ -46,6 +46,8 @@ func newMCCMetaMock(t *testing.T) *mccMetaMock {
 			_ = json.NewEncoder(w).Encode(map[string]any{"id": "meta-flow-1"})
 		case strings.HasSuffix(p, "/assets"), strings.HasSuffix(p, "/publish"):
 			_ = json.NewEncoder(w).Encode(map[string]any{"success": true})
+		case strings.HasSuffix(p, "/media") && r.Method == http.MethodPost:
+			_ = json.NewEncoder(w).Encode(map[string]any{"id": "uploaded-" + uuid.New().String()[:8]})
 		case strings.HasSuffix(p, "/messages"):
 			_ = json.NewEncoder(w).Encode(map[string]any{
 				"messages": []map[string]string{{"id": "wamid.out_" + uuid.New().String()[:8]}},

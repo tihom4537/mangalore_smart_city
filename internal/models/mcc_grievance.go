@@ -113,7 +113,7 @@ type MCCSession struct {
 	ContactID       uuid.UUID `gorm:"type:uuid;primaryKey" json:"contact_id"`
 	OrganizationID  uuid.UUID `gorm:"type:uuid;index;not null" json:"organization_id"`
 	Category        string    `gorm:"size:20;not null" json:"category"`
-	Stage           string    `gorm:"size:20;not null" json:"stage"`
+	Stage           string    `gorm:"size:40;not null" json:"stage"`
 	FlowToken       string    `gorm:"size:100" json:"flow_token"`
 	Latitude        *float64  `json:"latitude"`
 	Longitude       *float64  `json:"longitude"`
