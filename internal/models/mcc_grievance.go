@@ -120,8 +120,10 @@ type MCCSession struct {
 	DetectedAddress string    `gorm:"type:text" json:"detected_address"`
 	// GrievanceID is the complaint an action/reopen stage refers to, and
 	// PendingPhotos the action photos received before the text details.
+	// No default tag: the session is upserted with OnConflict UpdateAll,
+	// which skips columns that have one.
 	GrievanceID   *uint64    `json:"grievance_id"`
-	PendingPhotos JSONBArray `gorm:"type:jsonb;default:'[]'" json:"pending_photos"`
+	PendingPhotos JSONBArray `gorm:"type:jsonb" json:"pending_photos"`
 	UpdatedAt     time.Time  `gorm:"autoUpdateTime" json:"updated_at"`
 }
 
