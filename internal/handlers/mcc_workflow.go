@@ -420,6 +420,7 @@ func (a *App) handleMCCActionButton(account *models.WhatsAppAccount, contact *mo
 	}
 	var g models.MCCGrievance
 	if err := a.DB.Where("id = ? AND organization_id = ?", id, account.OrganizationID).First(&g).Error; err != nil {
+		a.Log.Error("MCC grievance lookup failed", "error", err, "id", id, "org", account.OrganizationID, "button", buttonID)
 		_ = a.sendAndSaveTextMessage(account, contact, "Sorry, that complaint could not be found.")
 		return true
 	}

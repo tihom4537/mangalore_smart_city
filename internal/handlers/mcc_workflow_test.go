@@ -98,6 +98,10 @@ func TestMCC_AutoAssignNotifiesWardSupervisor(t *testing.T) {
 
 	g := fileMCCGrievance(t, app, account, citizen, "wamid.flow1")
 
+	var sups []models.MCCSupervisor
+	app.DB.Find(&sups)
+	t.Logf("grievance org=%s ward=%d category=%q notify_error=%q; supervisors=%+v; account org=%s",
+		g.OrganizationID, g.WardNo, g.Category, g.NotifyError, sups, account.OrganizationID)
 	assert.Equal(t, models.MCCStatusAssigned, g.Status)
 	require.NotNil(t, g.SupervisorID)
 	assert.Equal(t, sup.ID, *g.SupervisorID, "most specific supervisor wins over the catch-all")
