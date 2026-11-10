@@ -144,10 +144,12 @@ enabled = false
 # Reverse geocoder for the shared location (Nominatim API; default: public OSM instance)
 # geocoder_url = "https://nominatim.openstreetmap.org"
 # Complaints are auto-assigned to supervisors (POST /api/mcc/supervisors) by
-# ward and category and sent to them on WhatsApp. Supervisors who have not
-# messaged the number in the last 24h can only receive an approved template:
-# name it here, with positional body params {{1}} complaint ID, {{2}} type,
-# {{3}} ward, {{4}} address, {{5}} details, {{6}} resolution timeline.
+# ward and category and sent to them on WhatsApp. When this approved template
+# is named it is the whole notification: image header = first complaint photo,
+# positional body params {{1}} complaint ID, {{2}} type, {{3}} ward,
+# {{4}} address, {{5}} details, {{6}} resolution timeline, and one QUICK_REPLY
+# button that opens the complaint. Without it the complaint goes out free-form,
+# which Meta only allows inside the supervisor's 24h window.
 # supervisor_template = "mcc_new_complaint"
 # Likewise for the closure notice to a citizen whose window has lapsed:
 # body params {{1}} complaint ID, {{2}} type, {{3}} action taken, and two

@@ -39,10 +39,10 @@ type MCCConfig struct {
 	// GeocoderURL is the Nominatim-compatible reverse geocoding base URL
 	// used to turn a shared location into an address.
 	GeocoderURL string `koanf:"geocoder_url"`
-	// SupervisorTemplate is the approved Meta template used to notify a
-	// supervisor outside their 24-hour service window. Positional body
-	// params: {{1}} complaint ID, {{2}} type, {{3}} ward, {{4}} address,
-	// {{5}} details, {{6}} resolution timeline. Empty: free-form only.
+	// SupervisorTemplate is the approved Meta template that notifies a
+	// supervisor (always, when set): image header = first photo, positional
+	// body params {{1}} complaint ID, {{2}} type, {{3}} ward, {{4}} address,
+	// {{5}} details, {{6}} resolution timeline. Empty: free-form card.
 	SupervisorTemplate string `koanf:"supervisor_template"`
 	// CitizenClosureTemplate notifies a citizen of closure outside their
 	// window. Body params: {{1}} complaint ID, {{2}} type, {{3}} action

@@ -137,15 +137,17 @@ func (a *App) assignMCCGrievanceTo(account *models.WhatsAppAccount, g *models.MC
 	a.notifyMCCSupervisor(account, g, supContact, "🆕 *New complaint assigned to you*")
 }
 
-// notifyMCCSupervisor sends the complaint to its supervisor, as the
-// configured template when they are outside the service window, and
-// records the outcome on the grievance.
+// notifyMCCSupervisor sends the complaint to its supervisor and records
+// the outcome on the grievance. With a supervisor template configured the
+// template is the whole notification: the first complaint photo is its
+// image header and its quick-reply button opens the details. Without one
+// the complaint goes out free-form (only possible inside the 24h window).
 func (a *App) notifyMCCSupervisor(account *models.WhatsAppAccount, g *models.MCCGrievance, supContact *models.Contact, headline string) {
 	var err error
-	if !mccInServiceWindow(supContact) && a.Config.MCC.SupervisorTemplate != "" {
+	if a.Config.MCC.SupervisorTemplate != "" {
 		err = a.sendMCCSupervisorTemplate(account, supContact, g)
 	} else {
-		err = a.sendMCCComplaintCard(account, supContact, g, headline)
+		err = a.sendMCCComplaintCard(account, supContact, g, headline, true)
 	}
 
 	updates := map[string]any{"notify_error": ""}
@@ -162,14 +164,15 @@ func mccInServiceWindow(contact *models.Contact) bool {
 	return contact.LastInboundAt != nil && time.Since(*contact.LastInboundAt) < mccServiceWindow
 }
 
-// sendMCCSupervisorTemplate sends the approved template; its first
-// QUICK_REPLY button opens the complaint card once the supervisor taps it.
+// sendMCCSupervisorTemplate sends the approved template with the first
+// complaint photo as its image header (when the template has one); its
+// first QUICK_REPLY button opens the complaint card.
 func (a *App) sendMCCSupervisorTemplate(account *models.WhatsAppAccount, contact *models.Contact, g *models.MCCGrievance) error {
 	tpl, err := a.mccTemplate(account, a.Config.MCC.SupervisorTemplate)
 	if err != nil {
 		return err
 	}
-	return a.sendMCCMessage(OutgoingMessageRequest{
+	req := OutgoingMessageRequest{
 		Account:  account,
 		Contact:  contact,
 		Type:     models.MessageTypeTemplate,
@@ -179,7 +182,38 @@ func (a *App) sendMCCSupervisorTemplate(account *models.WhatsAppAccount, contact
 			"4": mccOneLine(g.Address, 200), "5": mccOneLine(g.Description, 300), "6": g.SLA,
 		},
 		QuickReplyPayloads: mccQuickReplyPayloads(tpl, mccBtnOpen+mccIDString(g)),
-	})
+	}
+	if strings.EqualFold(tpl.HeaderType, "IMAGE") {
+		mediaID, filename, err := a.uploadMCCPhoto(account, g.PhotoURLs)
+		if err != nil {
+			return fmt.Errorf("template header photo: %w", err)
+		}
+		req.HeaderMediaID, req.HeaderMediaFilename = mediaID, filename
+	}
+	return a.sendMCCMessage(req)
+}
+
+// uploadMCCPhoto uploads the first readable photo to Meta and returns its
+// media ID.
+func (a *App) uploadMCCPhoto(account *models.WhatsAppAccount, photos models.JSONBArray) (string, string, error) {
+	var lastErr error = errors.New("no photo on the complaint")
+	for _, raw := range photos {
+		path, _ := raw.(string)
+		data, mime, err := a.readMCCMedia(path)
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		id, err := a.WhatsApp.UploadMedia(ctx, a.toWhatsAppAccount(account), data, mime, filepath.Base(path))
+		cancel()
+		if err != nil {
+			lastErr = err
+			continue
+		}
+		return id, filepath.Base(path), nil
+	}
+	return "", "", lastErr
 }
 
 // mccTemplate loads an approved template by name for the account.
@@ -229,11 +263,16 @@ func (a *App) sendMCCMessage(req OutgoingMessageRequest) error {
 	return nil
 }
 
-// sendMCCComplaintCard sends the complaint photos followed by the details
-// with the supervisor's action buttons.
-func (a *App) sendMCCComplaintCard(account *models.WhatsAppAccount, contact *models.Contact, g *models.MCCGrievance, headline string) error {
+// sendMCCComplaintCard sends the complaint details with the supervisor's
+// action buttons, preceded by the photos when withPhotos is set (the
+// template path already delivered the photo as its header).
+func (a *App) sendMCCComplaintCard(account *models.WhatsAppAccount, contact *models.Contact, g *models.MCCGrievance, headline string, withPhotos bool) error {
 	ref := mccRef(g)
-	for i, raw := range g.PhotoURLs {
+	var photos models.JSONBArray
+	if withPhotos {
+		photos = g.PhotoURLs
+	}
+	for i, raw := range photos {
 		path, _ := raw.(string)
 		data, mime, err := a.readMCCMedia(path)
 		if err != nil {
@@ -244,7 +283,7 @@ func (a *App) sendMCCComplaintCard(account *models.WhatsAppAccount, contact *mod
 		if err := a.sendMCCMessage(OutgoingMessageRequest{
 			Account: account, Contact: contact, Type: models.MessageTypeImage,
 			MediaData: data, MediaMimeType: mime, MediaURL: path, MediaFilename: filepath.Base(path),
-			Caption: fmt.Sprintf("%s – photo %d/%d", ref, i+1, len(g.PhotoURLs)),
+			Caption: fmt.Sprintf("%s – photo %d/%d", ref, i+1, len(photos)),
 		}); err != nil {
 			a.Log.Error("Failed to send MCC photo", "error", err, "grievance", g.ID, "path", path)
 		}
@@ -434,7 +473,7 @@ func (a *App) handleMCCActionButton(account *models.WhatsAppAccount, contact *mo
 		}
 		switch prefix {
 		case mccBtnOpen:
-			if err := a.sendMCCComplaintCard(account, contact, &g, "📄 *Complaint details*"); err != nil {
+			if err := a.sendMCCComplaintCard(account, contact, &g, "📄 *Complaint details*", a.Config.MCC.SupervisorTemplate == ""); err != nil {
 				a.Log.Error("Failed to send MCC card", "error", err, "grievance", g.ID)
 			}
 		case mccBtnProgress:

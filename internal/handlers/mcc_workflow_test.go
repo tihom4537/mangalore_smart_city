@@ -132,31 +132,42 @@ func TestMCC_NoSupervisorLeavesGrievanceOpen(t *testing.T) {
 	assert.Contains(t, g.NotifyError, "no supervisor configured")
 }
 
-func TestMCC_OutsideWindowUsesSupervisorTemplate(t *testing.T) {
+func TestMCC_SupervisorTemplateCarriesPhotoAndOpensCard(t *testing.T) {
 	app, meta, account, citizen := newMCCTestApp(t)
 	app.Config.MCC.SupervisorTemplate = "mcc_new_complaint"
 	createMCCSupervisor(t, app, account.OrganizationID, "Sup", mccTestSupervisorPhone, 37, "")
 	tpl := testutil.CreateTestTemplate(t, app.DB, account.OrganizationID, account.Name)
 	tpl.Name = "mcc_new_complaint"
+	tpl.HeaderType = "IMAGE"
 	tpl.Buttons = models.JSONBArray{map[string]any{"type": "QUICK_REPLY", "text": "View complaint"}}
 	require.NoError(t, app.DB.Save(tpl).Error)
+	// The supervisor is inside the window, yet the template is still used.
+	supContact, _, _ := contactutil.GetOrCreateContact(app.DB, account.OrganizationID, mccTestSupervisorPhone, "")
+	inWindow(t, app, supContact)
 
 	g := fileMCCGrievance(t, app, account, citizen, "wamid.flow1")
 
 	msgs := meta.messagesTo(mccTestSupervisorPhone)
-	require.Len(t, msgs, 1, "template only, no free-form card")
+	require.Len(t, msgs, 1, "template only: no separate photo or card")
+	assert.Equal(t, 1, meta.count("POST /v18.0/"+account.PhoneID+"/media"), "photo uploaded for the header")
 	assert.Contains(t, msgs[0], `"type":"template"`)
 	assert.Contains(t, msgs[0], `"name":"mcc_new_complaint"`)
+	assert.Contains(t, msgs[0], `"type":"header"`)
+	assert.Contains(t, msgs[0], `"image":{"id":"uploaded-`)
 	assert.Contains(t, msgs[0], `"text":"`+*g.ReferenceNo+`"`)
 	assert.Contains(t, msgs[0], `"sub_type":"quick_reply"`)
 	assert.Contains(t, msgs[0], `"payload":"`+mccBtnOpen+mccIDString(g)+`"`)
-	assert.NotNil(t, reloadMCCGrievance(t, app, g.ID).NotifiedAt)
+	g = reloadMCCGrievance(t, app, g.ID)
+	assert.NotNil(t, g.NotifiedAt)
+	assert.Empty(t, g.NotifyError)
 
-	// Tapping the template button (now in-window) sends the full card.
-	supContact, _, _ := contactutil.GetOrCreateContact(app.DB, account.OrganizationID, mccTestSupervisorPhone, "")
-	inWindow(t, app, supContact)
+	// Tapping the template button sends the card with buttons, without
+	// repeating the photo.
 	require.True(t, app.handleMCCMessage(account, supContact, "wamid.tap", ExtractedMessage{Type: "button_reply", ButtonID: mccBtnOpen + mccIDString(g)}))
-	assert.Contains(t, meta.lastMessageTo(mccTestSupervisorPhone), mccBtnClose+mccIDString(g))
+	msgs = meta.messagesTo(mccTestSupervisorPhone)
+	require.Len(t, msgs, 2)
+	assert.NotContains(t, msgs[1], `"type":"image"`)
+	assert.Contains(t, msgs[1], mccBtnClose+mccIDString(g))
 }
 
 func TestMCC_SupervisorClosesWithDetailsAndCitizenIsNotified(t *testing.T) {
