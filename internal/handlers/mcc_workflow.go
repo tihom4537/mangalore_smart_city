@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -534,6 +535,9 @@ func (a *App) mccStartClose(account *models.WhatsAppAccount, contact *models.Con
 		_ = a.sendAndSaveTextMessage(account, contact, fmt.Sprintf("%s is already %s.", mccRef(g), g.Status))
 		return
 	}
+	if a.Config.MCC.ClosureFlowID != "" && a.sendMCCCloseForm(account, contact, g) {
+		return
+	}
 	a.saveMCCSession(&models.MCCSession{
 		ContactID:      contact.ID,
 		OrganizationID: account.OrganizationID,
@@ -544,6 +548,124 @@ func (a *App) mccStartClose(account *models.WhatsAppAccount, contact *models.Con
 	_ = a.sendAndSaveTextMessage(account, contact, fmt.Sprintf(
 		"✍️ Closing *%s*.\n\nPlease reply with the *action taken* (what was done, when, by whom). "+
 			"You can also send a photo of the completed work with the details as its caption.", mccRef(g)))
+}
+
+// Closure Flow form (config [mcc] closure_flow_id). Its flow token is
+// "mcc:close:<grievance id>:<uuid>" so the nfm_reply is routed here.
+const (
+	mccCloseFlowCategory = "close"
+	mccCloseScreenID     = "CLOSE_COMPLAINT"
+	mccCloseFlowCTA      = "Fill action report"
+	mccCloseDateLayout   = "2006-01-02"
+)
+
+var mccIST = time.FixedZone("IST", 5*3600+1800)
+
+// sendMCCCloseForm sends the closure Flow pre-filled with the complaint
+// and remembers the token. It returns false when the form couldn't be sent
+// so the caller can fall back to asking for free text.
+func (a *App) sendMCCCloseForm(account *models.WhatsAppAccount, contact *models.Contact, g *models.MCCGrievance) bool {
+	token := fmt.Sprintf("%s%s:%d:%s", mccFlowTokenPrefix, mccCloseFlowCategory, g.ID, uuid.NewString())
+	a.saveMCCSession(&models.MCCSession{
+		ContactID:      contact.ID,
+		OrganizationID: account.OrganizationID,
+		Category:       g.Category,
+		Stage:          models.MCCStageCloseFormSent,
+		FlowToken:      token,
+		GrievanceID:    &g.ID,
+	})
+	screen := a.Config.MCC.ClosureFlowScreen
+	if screen == "" {
+		screen = mccCloseScreenID
+	}
+	err := a.sendMCCMessage(OutgoingMessageRequest{
+		Account:         account,
+		Contact:         contact,
+		Type:            models.MessageTypeFlow,
+		FlowID:          a.Config.MCC.ClosureFlowID,
+		FlowHeader:      "Close complaint",
+		BodyText:        fmt.Sprintf("Closing *%s*. Tap the button below and fill in the action taken, the date, the location and photos of the completed work.", mccRef(g)),
+		FlowCTA:         mccCloseFlowCTA,
+		FlowToken:       token,
+		FlowFirstScreen: screen,
+		FlowData: map[string]any{
+			"reference_no":      mccRef(g),
+			"complaint_summary": mccOneLine(fmt.Sprintf("%s - %s, %s", g.ComplaintType, mccWardLabel(g), g.Address), 120),
+			"today":             time.Now().In(mccIST).Format(mccCloseDateLayout),
+		},
+	})
+	if err != nil {
+		a.Log.Error("Failed to send MCC closure form", "error", err, "grievance", g.ID, "contact", contact.PhoneNumber)
+		return false
+	}
+	return true
+}
+
+// receiveMCCCloseForm handles the closure Flow submission.
+func (a *App) receiveMCCCloseForm(account *models.WhatsAppAccount, contact *models.Contact, waMessageID, token string, data map[string]any) {
+	var session models.MCCSession
+	err := a.DB.Where("contact_id = ? AND flow_token = ?", contact.ID, token).First(&session).Error
+	if err != nil || session.GrievanceID == nil {
+		a.Log.Warn("MCC closure form reply without session", "flow_token", token, "contact", contact.PhoneNumber, "error", err)
+		_ = a.sendAndSaveTextMessage(account, contact, "Sorry, this action report has expired. Please open the complaint again and tap *Close complaint*.")
+		return
+	}
+	var g models.MCCGrievance
+	if err := a.DB.Where("id = ? AND organization_id = ?", *session.GrievanceID, account.OrganizationID).First(&g).Error; err != nil {
+		a.DB.Delete(&session)
+		_ = a.sendAndSaveTextMessage(account, contact, "Sorry, that complaint could not be found.")
+		return
+	}
+	if mccIsFinished(&g) {
+		a.DB.Delete(&session)
+		_ = a.sendAndSaveTextMessage(account, contact, fmt.Sprintf("%s is already %s.", mccRef(&g), g.Status))
+		return
+	}
+
+	action := strings.TrimSpace(mccString(data["action_taken"]))
+	if action == "" {
+		action = "Resolved (no details given)"
+	}
+	closure := mccClosure{
+		Action:   action,
+		Location: strings.TrimSpace(mccString(data["work_location"])),
+		FixedOn:  mccParseFlowDate(data["fixed_on"]),
+		Photos:   a.downloadMCCPhotos(account, data["action_photos"]),
+	}
+	a.DB.Delete(&session)
+	a.closeMCCGrievanceWith(account, &g, closure, "supervisor")
+	_ = a.sendAndSaveTextMessage(account, contact, fmt.Sprintf(
+		"✅ *%s* closed. The citizen has been notified of the action taken.\n\nReply anything to see your pending complaints.", mccRef(&g)))
+}
+
+func mccString(v any) string {
+	s, _ := v.(string)
+	return s
+}
+
+// mccParseFlowDate accepts a DatePicker value: a Unix-millisecond timestamp
+// (as a string or JSON number) or a YYYY-MM-DD date.
+func mccParseFlowDate(v any) *time.Time {
+	var raw string
+	switch x := v.(type) {
+	case string:
+		raw = strings.TrimSpace(x)
+	case json.Number:
+		raw = x.String()
+	case float64:
+		raw = strconv.FormatFloat(x, 'f', 0, 64)
+	}
+	if raw == "" {
+		return nil
+	}
+	if t, err := time.ParseInLocation(mccCloseDateLayout, raw, mccIST); err == nil {
+		return &t
+	}
+	if ms, err := strconv.ParseInt(raw, 10, 64); err == nil {
+		t := time.UnixMilli(ms).In(mccIST)
+		return &t
+	}
+	return nil
 }
 
 // receiveMCCActionDetails takes the supervisor's reply to mccStartClose. A
@@ -580,18 +702,39 @@ func (a *App) receiveMCCActionDetails(account *models.WhatsAppAccount, contact *
 		"✅ *%s* closed. The citizen has been notified of the action taken.\n\nReply anything to see your pending complaints.", mccRef(&g)))
 }
 
-// closeMCCGrievance records the resolution and notifies the citizen.
+// mccClosure is what the supervisor reported when closing a complaint.
+type mccClosure struct {
+	Action   string
+	Photos   models.JSONBArray
+	FixedOn  *time.Time
+	Location string
+}
+
+// closeMCCGrievance records a free-text resolution and notifies the citizen.
 func (a *App) closeMCCGrievance(account *models.WhatsAppAccount, g *models.MCCGrievance, actionTaken string, photos models.JSONBArray, by string) {
+	a.closeMCCGrievanceWith(account, g, mccClosure{Action: actionTaken, Photos: photos}, by)
+}
+
+func (a *App) closeMCCGrievanceWith(account *models.WhatsAppAccount, g *models.MCCGrievance, c mccClosure, by string) {
 	now := time.Now()
 	g.Status = models.MCCStatusResolved
-	g.ActionTaken = actionTaken
-	g.ActionPhotoURLs = photos
+	g.ActionTaken = c.Action
+	g.ActionPhotoURLs = c.Photos
 	if g.ActionPhotoURLs == nil {
 		g.ActionPhotoURLs = models.JSONBArray{}
 	}
+	g.FixedOn = c.FixedOn
+	g.WorkLocation = c.Location
 	g.ResolvedAt = &now
-	g.History = append(g.History, mccHistoryEntry(models.MCCStatusResolved, by, actionTaken))
-	if err := a.DB.Model(g).Select("status", "action_taken", "action_photo_urls", "resolved_at", "history").Updates(g).Error; err != nil {
+	note := c.Action
+	if c.FixedOn != nil {
+		note += " | fixed on " + c.FixedOn.In(mccIST).Format("02 Jan 2006")
+	}
+	if c.Location != "" {
+		note += " | at " + c.Location
+	}
+	g.History = append(g.History, mccHistoryEntry(models.MCCStatusResolved, by, note))
+	if err := a.DB.Model(g).Select("status", "action_taken", "action_photo_urls", "fixed_on", "work_location", "resolved_at", "history").Updates(g).Error; err != nil {
 		a.Log.Error("Failed to close MCC grievance", "error", err, "grievance", g.ID)
 		return
 	}
@@ -659,10 +802,17 @@ func (a *App) notifyMCCCitizenClosure(account *models.WhatsAppAccount, g *models
 }
 
 func mccClosureText(g *models.MCCGrievance) string {
+	var extra strings.Builder
+	if g.FixedOn != nil {
+		fmt.Fprintf(&extra, "*Fixed on:* %s\n", g.FixedOn.In(mccIST).Format("02 Jan 2006"))
+	}
+	if g.WorkLocation != "" {
+		fmt.Fprintf(&extra, "*Location:* %s\n", mccOneLine(g.WorkLocation, 120))
+	}
 	return truncateRunes(fmt.Sprintf("Dear Citizen, your complaint *%s* (%s) has been resolved.\n\n"+
-		"*Action taken:* %s\n\n"+
+		"*Action taken:* %s\n%s\n"+
 		"Are you satisfied with the resolution? If the issue persists, tap *Reopen* and we will send it back to the supervisor.",
-		mccRef(g), g.ComplaintType, mccOneLine(g.ActionTaken, 500)), 1024)
+		mccRef(g), g.ComplaintType, mccOneLine(g.ActionTaken, 500), extra.String()), 1024)
 }
 
 func (a *App) mccCitizenSatisfied(account *models.WhatsAppAccount, contact *models.Contact, g *models.MCCGrievance) {

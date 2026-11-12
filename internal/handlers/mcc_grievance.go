@@ -67,6 +67,10 @@ func (a *App) handleMCCMessage(account *models.WhatsAppAccount, contact *models.
 			return false
 		}
 		category, _, _ := strings.Cut(rest, ":")
+		if category == mccCloseFlowCategory {
+			a.receiveMCCCloseForm(account, contact, waMessageID, token, mccFlowResponse(extracted))
+			return true
+		}
 		form := mccFormByCategory(category)
 		if form == nil {
 			a.Log.Warn("MCC flow reply with unknown category", "flow_token", token)
@@ -143,7 +147,8 @@ func (a *App) loadMCCSession(contact *models.Contact) *models.MCCSession {
 		return nil
 	}
 	ttl := mccSessionTTL
-	if session.Stage == models.MCCStageAwaitingAction || session.Stage == models.MCCStageAwaitingReopenReason {
+	switch session.Stage {
+	case models.MCCStageAwaitingAction, models.MCCStageAwaitingReopenReason, models.MCCStageCloseFormSent:
 		ttl = mccActionTTL
 	}
 	if time.Since(session.UpdatedAt) > ttl {

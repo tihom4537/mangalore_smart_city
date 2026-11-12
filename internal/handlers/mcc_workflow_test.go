@@ -415,3 +415,71 @@ func TestMCC_QuickReplyPayloads(t *testing.T) {
 	}}
 	assert.Equal(t, map[string]string{"1": "x", "2": "y"}, mccQuickReplyPayloads(tpl, "x", "y", "z"))
 }
+
+func TestMCC_SupervisorClosesViaFlowForm(t *testing.T) {
+	app, meta, account, citizen := newMCCTestApp(t)
+	app.Config.MCC.ClosureFlowID = "1892786508384674"
+	createMCCSupervisor(t, app, account.OrganizationID, "Sup", mccTestSupervisorPhone, 37, "")
+	supContact, _, _ := contactutil.GetOrCreateContact(app.DB, account.OrganizationID, mccTestSupervisorPhone, "")
+	inWindow(t, app, supContact)
+	inWindow(t, app, citizen)
+	g := fileMCCGrievance(t, app, account, citizen, "wamid.flowclose")
+	id := mccIDString(g)
+
+	// Close: the flow form goes out pre-filled with the complaint.
+	require.True(t, app.handleMCCMessage(account, supContact, "wamid.s1", ExtractedMessage{Type: "button_reply", ButtonID: mccBtnClose + id}))
+	form := meta.lastMessageTo(mccTestSupervisorPhone)
+	assert.Contains(t, form, `"flow_id":"1892786508384674"`)
+	assert.Contains(t, form, mccCloseScreenID)
+	assert.Contains(t, form, `"reference_no":"`+mccRef(g)+`"`)
+	assert.Contains(t, form, `"today":"`)
+	var session models.MCCSession
+	require.NoError(t, app.DB.Where("contact_id = ?", supContact.ID).First(&session).Error)
+	assert.Equal(t, models.MCCStageCloseFormSent, session.Stage)
+	assert.True(t, strings.HasPrefix(session.FlowToken, "mcc:close:"+id+":"), session.FlowToken)
+	assert.Contains(t, form, session.FlowToken)
+
+	// Submission closes it with date, location and photos.
+	citizenBefore := len(meta.messagesTo(citizen.PhoneNumber))
+	reply := ExtractedMessage{Type: "nfm_reply", FlowResponseData: map[string]any{
+		"flow_token":    session.FlowToken,
+		"action_taken":  "Dump cleared by ward team",
+		"fixed_on":      "1762905600000", // 2025-11-12 00:00 UTC
+		"work_location": "Behind Maroli bus stop",
+		"action_photos": []any{map[string]any{"id": "media-photo-1", "mime_type": "image/jpeg"}},
+	}}
+	require.True(t, app.handleMCCMessage(account, supContact, "wamid.s2", reply))
+	g = reloadMCCGrievance(t, app, g.ID)
+	assert.Equal(t, models.MCCStatusResolved, g.Status)
+	assert.Equal(t, "Dump cleared by ward team", g.ActionTaken)
+	assert.Equal(t, "Behind Maroli bus stop", g.WorkLocation)
+	require.NotNil(t, g.FixedOn)
+	assert.Equal(t, "2025-11-12", g.FixedOn.In(mccIST).Format("2006-01-02"))
+	assert.Len(t, g.ActionPhotoURLs, 1)
+	assert.Contains(t, meta.lastMessageTo(mccTestSupervisorPhone), "closed")
+	var sessions int64
+	app.DB.Model(&models.MCCSession{}).Where("contact_id = ?", supContact.ID).Count(&sessions)
+	assert.Zero(t, sessions)
+
+	citizenMsgs := meta.messagesTo(citizen.PhoneNumber)[citizenBefore:]
+	require.Len(t, citizenMsgs, 2, "work photo then closure notice")
+	assert.Contains(t, citizenMsgs[1], "Dump cleared by ward team")
+	assert.Contains(t, citizenMsgs[1], "12 Nov 2025")
+	assert.Contains(t, citizenMsgs[1], "Behind Maroli bus stop")
+	assert.Contains(t, citizenMsgs[1], mccBtnReopen+id)
+
+	// A stale token is answered, not applied.
+	require.True(t, app.handleMCCMessage(account, supContact, "wamid.s3", ExtractedMessage{Type: "nfm_reply",
+		FlowResponseData: map[string]any{"flow_token": "mcc:close:" + id + ":gone", "action_taken": "again"}}))
+	assert.Contains(t, meta.lastMessageTo(mccTestSupervisorPhone), "expired")
+	assert.Equal(t, "Dump cleared by ward team", reloadMCCGrievance(t, app, g.ID).ActionTaken)
+}
+
+func TestMCC_ParseFlowDate(t *testing.T) {
+	assert.Nil(t, mccParseFlowDate(nil))
+	assert.Nil(t, mccParseFlowDate(""))
+	assert.Nil(t, mccParseFlowDate("not-a-date"))
+	assert.Equal(t, "2026-11-12", mccParseFlowDate("2026-11-12").Format("2006-01-02"))
+	assert.Equal(t, "2025-11-12", mccParseFlowDate(json.Number("1762905600000")).In(mccIST).Format("2006-01-02"))
+	assert.Equal(t, "2025-11-12", mccParseFlowDate(float64(1762905600000)).In(mccIST).Format("2006-01-02"))
+}

@@ -65,6 +65,8 @@ type MCCGrievance struct {
 	// Closure details entered by the supervisor on WhatsApp.
 	ActionTaken     string     `gorm:"type:text" json:"action_taken"`
 	ActionPhotoURLs JSONBArray `gorm:"type:jsonb;default:'[]'" json:"action_photo_urls"`
+	FixedOn         *time.Time `json:"fixed_on"`
+	WorkLocation    string     `gorm:"type:text" json:"work_location"`
 	InProgressAt    *time.Time `json:"in_progress_at"`
 	ResolvedAt      *time.Time `json:"resolved_at"`
 	ClosedAt        *time.Time `json:"closed_at"`
@@ -103,6 +105,8 @@ const (
 	MCCStageFormSent         = "form_sent"
 	// Supervisor tapped "Close complaint" and owes the action-taken details.
 	MCCStageAwaitingAction = "awaiting_action"
+	// Supervisor was sent the closure Flow form (FlowToken set).
+	MCCStageCloseFormSent = "close_form_sent"
 	// Citizen tapped "Reopen" and owes the reason.
 	MCCStageAwaitingReopenReason = "awaiting_reopen_reason"
 )

@@ -157,6 +157,12 @@ enabled = false
 # citizen_closure_template = "mcc_complaint_resolved"
 # Map link format for the citizen's shared location (lat, lon)
 # maps_url = "https://www.google.com/maps?q=%f,%f"
+# Published WhatsApp Flow a supervisor fills in to close a complaint (fields
+# action_taken, fixed_on, work_location, action_photos; the screen's data
+# block must declare reference_no, complaint_summary and today). Without it
+# the action taken is asked as a free-text reply.
+# closure_flow_id = "1892786508384674"
+# closure_flow_screen = "CLOSE_COMPLAINT"
 
 # Default admin credentials (only used during initial setup when no users exist)
 [default_admin]

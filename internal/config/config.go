@@ -50,6 +50,13 @@ type MCCConfig struct {
 	CitizenClosureTemplate string `koanf:"citizen_closure_template"`
 	// MapsURL formats the shared location link sent to the supervisor.
 	MapsURL string `koanf:"maps_url"`
+	// ClosureFlowID is the Meta ID of the published WhatsApp Flow a
+	// supervisor fills in to close a complaint (fields action_taken,
+	// fixed_on, work_location, action_photos; data reference_no,
+	// complaint_summary, today). Empty: the details are asked as free text.
+	ClosureFlowID string `koanf:"closure_flow_id"`
+	// ClosureFlowScreen is the flow's first screen ID (default CLOSE_COMPLAINT).
+	ClosureFlowScreen string `koanf:"closure_flow_screen"`
 }
 
 type TTSConfig struct {
