@@ -525,10 +525,11 @@ func TestMCC_SupervisorLocationPin(t *testing.T) {
 	assert.Contains(t, pin, mccRef(g))
 	assert.Contains(t, pin, "2nd cross, Maroli")
 
-	// Opening the card again re-sends the pin after it.
+	// Opening the card again ends with the pin.
 	n := len(msgs)
 	require.True(t, app.handleMCCMessage(account, supContact, "wamid.o", ExtractedMessage{Type: "button_reply", ButtonID: mccBtnOpen + mccIDString(g)}))
 	msgs = meta.messagesTo(mccTestSupervisorPhone)
-	require.Len(t, msgs, n+2, "card then pin")
-	assert.Contains(t, msgs[n+1], `"type":"location"`)
+	require.Greater(t, len(msgs), n+1)
+	assert.Contains(t, msgs[len(msgs)-2], `"type":"interactive"`, "card")
+	assert.Contains(t, msgs[len(msgs)-1], `"type":"location"`, "then pin")
 }

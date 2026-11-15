@@ -228,11 +228,13 @@ func (a *App) uploadMCCPhoto(account *models.WhatsAppAccount, photos models.JSON
 // first use, at most once per mccTemplateSyncEvery per account.
 func (a *App) mccTemplate(account *models.WhatsAppAccount, name string) (*models.Template, error) {
 	var tpl models.Template
-	q := a.DB.Where("organization_id = ? AND whats_app_account = ? AND name = ?", account.OrganizationID, account.Name, name).
-		Order("status = 'APPROVED' DESC")
-	err := q.First(&tpl).Error
+	lookup := func() error {
+		return a.DB.Where("organization_id = ? AND whats_app_account = ? AND name = ?", account.OrganizationID, account.Name, name).
+			Order("status = 'APPROVED' DESC").First(&tpl).Error
+	}
+	err := lookup()
 	if errors.Is(err, gorm.ErrRecordNotFound) && a.mccSyncTemplatesOnce(account) {
-		err = q.First(&tpl).Error
+		err = lookup()
 	}
 	if err != nil {
 		return nil, fmt.Errorf("template %q: %w", name, err)
