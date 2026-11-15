@@ -326,3 +326,58 @@ func (mccCloseForm) screens() []any {
 		},
 	}
 }
+
+// mccReopenForm is the citizen's reopen form: reason plus optional photos.
+// It is published on Meta under this name (an existing same-named flow is
+// reused).
+type mccReopenForm struct{}
+
+const (
+	mccReopenFormName   = "mcc_open"
+	mccReopenScreenID   = "REOPEN_COMPLAINT"
+	mccReopenFormHeader = "Reopen complaint"
+)
+
+func (mccReopenForm) metaName() string { return mccReopenFormName }
+
+func (mccReopenForm) screens() []any {
+	return []any{
+		map[string]any{
+			"id":       mccReopenScreenID,
+			"title":    mccReopenFormHeader,
+			"terminal": true,
+			"success":  true,
+			"data": map[string]any{
+				"heading":           map[string]any{"type": "string", "__example__": "Reopen complaint MMP-SW-000010"},
+				"complaint_summary": map[string]any{"type": "string", "__example__": "Burning of garbage - Ward 37, 2nd cross, Maroli"},
+				"previous_action":   map[string]any{"type": "string", "__example__": "Reported as resolved on 15 Nov 2026: Garbage cleared and warning issued"},
+			},
+			"layout": map[string]any{
+				"type": "SingleColumnLayout",
+				"children": []any{
+					map[string]any{"type": "TextSubheading", "text": "Mangaluru Mahanagara Palike - One Touch Mangaluru"},
+					map[string]any{"type": "TextBody", "text": "${data.heading}"},
+					map[string]any{"type": "TextCaption", "text": "${data.complaint_summary}"},
+					map[string]any{"type": "TextCaption", "text": "${data.previous_action}"},
+					map[string]any{
+						"type": "TextArea", "name": "reason", "label": "Reason for reopening",
+						"required": true, "max-length": 600,
+						"helper-text": "What is still wrong or not done?",
+					},
+					map[string]any{
+						"type": "PhotoPicker", "name": "photos", "label": "Photos (optional)",
+						"description":  "Take a photo of the current condition or upload from gallery (up to 3)",
+						"photo-source": "camera_gallery", "min-uploaded-photos": 0, "max-uploaded-photos": 3,
+					},
+					map[string]any{
+						"type": "Footer", "label": "Reopen complaint",
+						"on-click-action": map[string]any{
+							"name":    "complete",
+							"payload": map[string]any{"reason": "${form.reason}", "photos": "${form.photos}"},
+						},
+					},
+				},
+			},
+		},
+	}
+}

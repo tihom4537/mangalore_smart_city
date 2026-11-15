@@ -285,15 +285,28 @@ func TestMCC_CitizenReopensAndSupervisorIsRenotified(t *testing.T) {
 
 	app.closeMCCGrievance(account, g, "Cleared", nil, "supervisor")
 
+	// Reopen sends the reopen flow, tied to the complaint by its token.
 	require.True(t, app.handleMCCMessage(account, citizen, "wamid.c1", ExtractedMessage{Type: "button_reply", ButtonID: mccBtnReopen + id}))
-	assert.Contains(t, meta.lastMessageTo(citizen.PhoneNumber), "tell us briefly")
+	form := meta.lastMessageTo(citizen.PhoneNumber)
+	assert.Contains(t, form, `"flow_id":"meta-flow-1"`)
+	assert.Contains(t, form, `"heading":"Reopen complaint `+mccRef(g)+`"`)
+	assert.Contains(t, form, `"previous_action":"Reported as resolved on `)
+	assert.Contains(t, form, "Cleared")
+	var session models.MCCSession
+	require.NoError(t, app.DB.Where("contact_id = ?", citizen.ID).First(&session).Error)
+	assert.Equal(t, models.MCCStageReopenFormSent, session.Stage)
+	assert.True(t, strings.HasPrefix(session.FlowToken, "mcc:reopen:"+id+":"), session.FlowToken)
 
 	supBefore := len(meta.messagesTo(mccTestSupervisorPhone))
-	require.True(t, app.handleMCCMessage(account, citizen, "wamid.c2", ExtractedMessage{Type: "text", Text: "Still burning near the same spot"}))
+	require.True(t, app.handleMCCMessage(account, citizen, "wamid.c2", ExtractedMessage{Type: "nfm_reply", FlowResponseData: map[string]any{
+		"flow_token": session.FlowToken, "reason": "Still burning near the same spot",
+		"photos": []any{map[string]any{"id": "media-photo-1", "mime_type": "image/jpeg"}},
+	}}))
 	g = reloadMCCGrievance(t, app, g.ID)
 	assert.Equal(t, models.MCCStatusReopened, g.Status)
 	assert.Equal(t, 1, g.ReopenCount)
 	assert.Equal(t, "Still burning near the same spot", g.ReopenReason)
+	assert.Len(t, g.ReopenPhotoURLs, 1)
 	assert.Nil(t, g.ResolvedAt)
 	assert.Contains(t, meta.lastMessageTo(citizen.PhoneNumber), "has been reopened")
 
@@ -303,6 +316,19 @@ func TestMCC_CitizenReopensAndSupervisorIsRenotified(t *testing.T) {
 	assert.Contains(t, card, "reopened by the citizen")
 	assert.Contains(t, card, "Still burning near the same spot")
 	assert.Contains(t, card, mccBtnClose+id)
+	var reopenPhotos int
+	for _, m := range supMsgs {
+		if strings.Contains(m, "reopened, citizen") {
+			reopenPhotos++
+		}
+	}
+	assert.Equal(t, 1, reopenPhotos, "citizen's reopen photo forwarded to the supervisor")
+
+	// A stale reopen token is answered, not applied.
+	require.True(t, app.handleMCCMessage(account, citizen, "wamid.c2b", ExtractedMessage{Type: "nfm_reply",
+		FlowResponseData: map[string]any{"flow_token": "mcc:reopen:" + id + ":gone", "reason": "again"}}))
+	assert.Contains(t, meta.lastMessageTo(citizen.PhoneNumber), "expired")
+	assert.Equal(t, 1, reloadMCCGrievance(t, app, g.ID).ReopenCount)
 
 	// The citizen's next plain text goes back to the menu, not the reopen flow.
 	require.True(t, app.handleMCCMessage(account, citizen, "wamid.c3", ExtractedMessage{Type: "text", Text: "hi"}))

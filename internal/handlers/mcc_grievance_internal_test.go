@@ -194,3 +194,27 @@ func TestMCC_CloseFormJSON(t *testing.T) {
 		t.Error("no interpolation inside literal text; bind whole values")
 	}
 }
+
+func TestMCC_ReopenFormJSON(t *testing.T) {
+	raw, err := json.Marshal(&whatsapp.FlowJSON{Version: mccJSONVersion, Screens: mccReopenForm{}.screens()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"id":"REOPEN_COMPLAINT"`, `"text":"${data.heading}"`, `"label":"Reason for reopening"`,
+		`"min-uploaded-photos":0`, `"reason":"${form.reason}"`, `"photos":"${form.photos}"`} {
+		if !strings.Contains(string(raw), want) {
+			t.Errorf("reopen form JSON missing %s", want)
+		}
+	}
+	screen := mccReopenForm{}.screens()[0].(map[string]any)
+	for _, key := range []string{"heading", "complaint_summary", "previous_action"} {
+		if _, ok := screen["data"].(map[string]any)[key]; !ok {
+			t.Errorf("reopen form must declare data.%s", key)
+		}
+	}
+	for _, c := range screen["layout"].(map[string]any)["children"].([]any) {
+		if label, _ := c.(map[string]any)["label"].(string); utf8.RuneCountInString(label) > 20 {
+			t.Errorf("label %q exceeds 20 chars", label)
+		}
+	}
+}

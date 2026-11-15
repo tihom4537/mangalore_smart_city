@@ -83,9 +83,11 @@ type MCCGrievance struct {
 	ResolvedAt          *time.Time `json:"resolved_at"`
 	ClosedAt            *time.Time `json:"closed_at"`
 
-	// Citizen reopen tracking.
-	ReopenCount  int    `gorm:"default:0" json:"reopen_count"`
-	ReopenReason string `gorm:"type:text" json:"reopen_reason"`
+	// Citizen reopen tracking. ReopenPhotoURLs are the photos sent with
+	// the latest reopen form.
+	ReopenCount     int        `gorm:"default:0" json:"reopen_count"`
+	ReopenReason    string     `gorm:"type:text" json:"reopen_reason"`
+	ReopenPhotoURLs JSONBArray `gorm:"type:jsonb;default:'[]'" json:"reopen_photo_urls"`
 
 	// History is an append-only audit of status changes:
 	// [{"status":..., "at":..., "by":..., "note":...}].
@@ -125,6 +127,8 @@ const (
 	MCCStageAwaitingCloseLocation    = "awaiting_close_location"
 	// Citizen tapped "Reopen" and owes the reason.
 	MCCStageAwaitingReopenReason = "awaiting_reopen_reason"
+	// Citizen was sent the reopen Flow form (FlowToken set).
+	MCCStageReopenFormSent = "reopen_form_sent"
 )
 
 // MCCSession tracks one citizen's in-progress complaint between WhatsApp

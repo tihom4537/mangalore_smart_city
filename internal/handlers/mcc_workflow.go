@@ -313,25 +313,11 @@ func (a *App) sendMCCMessage(req OutgoingMessageRequest) error {
 // template path already delivered the photo as its header).
 func (a *App) sendMCCComplaintCard(account *models.WhatsAppAccount, contact *models.Contact, g *models.MCCGrievance, headline string, withPhotos bool) error {
 	ref := mccRef(g)
-	var photos models.JSONBArray
 	if withPhotos {
-		photos = g.PhotoURLs
+		a.sendMCCPhotos(account, contact, g, g.PhotoURLs, ref+" – photo")
 	}
-	for i, raw := range photos {
-		path, _ := raw.(string)
-		data, mime, err := a.readMCCMedia(path)
-		if err != nil {
-			a.Log.Warn("MCC photo unreadable", "error", err, "path", path)
-			continue
-		}
-		// A photo that Meta rejects must not stop the complaint itself.
-		if err := a.sendMCCMessage(OutgoingMessageRequest{
-			Account: account, Contact: contact, Type: models.MessageTypeImage,
-			MediaData: data, MediaMimeType: mime, MediaURL: path, MediaFilename: filepath.Base(path),
-			Caption: fmt.Sprintf("%s – photo %d/%d", ref, i+1, len(photos)),
-		}); err != nil {
-			a.Log.Error("Failed to send MCC photo", "error", err, "grievance", g.ID, "path", path)
-		}
+	if g.Status == models.MCCStatusReopened && len(g.ReopenPhotoURLs) > 0 {
+		a.sendMCCPhotos(account, contact, g, g.ReopenPhotoURLs, ref+" – reopened, citizen's photo")
 	}
 
 	body := headline + "\n\n" + a.mccComplaintSummary(g)
@@ -361,6 +347,26 @@ func (a *App) sendMCCLocationPin(account *models.WhatsAppAccount, contact *model
 	})
 	if err != nil {
 		a.Log.Error("Failed to send MCC location pin", "error", err, "grievance", g.ID, "phone", contact.PhoneNumber)
+	}
+}
+
+// sendMCCPhotos sends photos one by one; a photo Meta rejects must not
+// stop the message that follows.
+func (a *App) sendMCCPhotos(account *models.WhatsAppAccount, contact *models.Contact, g *models.MCCGrievance, photos models.JSONBArray, captionPrefix string) {
+	for i, raw := range photos {
+		path, _ := raw.(string)
+		data, mime, err := a.readMCCMedia(path)
+		if err != nil {
+			a.Log.Warn("MCC photo unreadable", "error", err, "path", path)
+			continue
+		}
+		if err := a.sendMCCMessage(OutgoingMessageRequest{
+			Account: account, Contact: contact, Type: models.MessageTypeImage,
+			MediaData: data, MediaMimeType: mime, MediaURL: path, MediaFilename: filepath.Base(path),
+			Caption: fmt.Sprintf("%s %d/%d", captionPrefix, i+1, len(photos)),
+		}); err != nil {
+			a.Log.Error("Failed to send MCC photo", "error", err, "grievance", g.ID, "path", path)
+		}
 	}
 }
 
@@ -857,9 +863,11 @@ func (a *App) mccStartClose(account *models.WhatsAppAccount, contact *models.Con
 // Closure Flow form (config [mcc] closure_flow_id). Its flow token is
 // "mcc:close:<grievance id>:<uuid>" so the nfm_reply is routed here.
 const (
-	mccCloseFlowCategory = "close"
-	mccCloseFlowCTA      = "Fill action report"
-	mccCloseDateLayout   = "2006-01-02"
+	mccCloseFlowCategory  = "close"
+	mccCloseFlowCTA       = "Fill action report"
+	mccCloseDateLayout    = "2006-01-02"
+	mccReopenFlowCategory = "reopen"
+	mccReopenFlowCTA      = "Reopen complaint"
 )
 
 var mccIST = time.FixedZone("IST", 5*3600+1800)
@@ -1236,6 +1244,9 @@ func (a *App) mccStartReopen(account *models.WhatsAppAccount, contact *models.Co
 		_ = a.sendAndSaveTextMessage(account, contact, "Sorry, this complaint cannot be reopened. Please file a new complaint.")
 		return
 	}
+	if a.sendMCCReopenForm(account, contact, g) {
+		return
+	}
 	a.saveMCCSession(&models.MCCSession{
 		ContactID:      contact.ID,
 		OrganizationID: account.OrganizationID,
@@ -1245,6 +1256,80 @@ func (a *App) mccStartReopen(account *models.WhatsAppAccount, contact *models.Co
 	})
 	_ = a.sendAndSaveTextMessage(account, contact, fmt.Sprintf(
 		"We're sorry the issue isn't resolved. Please tell us briefly what is still wrong with *%s* and we will reopen it.", mccRef(g)))
+}
+
+// sendMCCReopenForm sends the reopen Flow (mccReopenForm) tied to the
+// complaint through its token; false when it couldn't be sent.
+func (a *App) sendMCCReopenForm(account *models.WhatsAppAccount, contact *models.Contact, g *models.MCCGrievance) bool {
+	flow, err := a.ensureMCCFlow(account, mccReopenForm{})
+	if err != nil {
+		a.Log.Error("MCC reopen flow unavailable", "error", err)
+		return false
+	}
+	mode := ""
+	if flow.Status != "PUBLISHED" {
+		mode = "draft"
+	}
+	token := fmt.Sprintf("%s%s:%d:%s", mccFlowTokenPrefix, mccReopenFlowCategory, g.ID, uuid.NewString())
+	a.saveMCCSession(&models.MCCSession{
+		ContactID:      contact.ID,
+		OrganizationID: account.OrganizationID,
+		Category:       g.Category,
+		Stage:          models.MCCStageReopenFormSent,
+		FlowToken:      token,
+		GrievanceID:    &g.ID,
+	})
+	err = a.sendMCCMessage(OutgoingMessageRequest{
+		Account:         account,
+		Contact:         contact,
+		Type:            models.MessageTypeFlow,
+		FlowID:          flow.MetaFlowID,
+		FlowMode:        mode,
+		FlowHeader:      mccReopenFormHeader,
+		BodyText:        fmt.Sprintf("We're sorry the issue isn't resolved. Tap the button below, tell us what is still wrong with *%s* and add photos if you can.", mccRef(g)),
+		FlowCTA:         mccReopenFlowCTA,
+		FlowToken:       token,
+		FlowFirstScreen: mccReopenScreenID,
+		FlowData: map[string]any{
+			"heading":           "Reopen complaint " + mccRef(g),
+			"complaint_summary": mccOneLine(fmt.Sprintf("%s - %s, %s", g.ComplaintType, mccWardLabel(g), g.Address), 120),
+			"previous_action":   mccOneLine("Reported as resolved on "+mccFixedOnLabel(g)+": "+g.ActionTaken, 200),
+		},
+	})
+	if err != nil {
+		a.Log.Error("Failed to send MCC reopen form", "error", err, "grievance", g.ID, "contact", contact.PhoneNumber)
+		a.DB.Where("contact_id = ?", contact.ID).Delete(&models.MCCSession{})
+		return false
+	}
+	return true
+}
+
+// receiveMCCReopenForm handles the reopen Flow submission.
+func (a *App) receiveMCCReopenForm(account *models.WhatsAppAccount, contact *models.Contact, token string, data map[string]any) {
+	var session models.MCCSession
+	err := a.DB.Where("contact_id = ? AND flow_token = ?", contact.ID, token).First(&session).Error
+	if err != nil || session.GrievanceID == nil {
+		a.Log.Warn("MCC reopen form reply without session", "flow_token", token, "contact", contact.PhoneNumber, "error", err)
+		_ = a.sendAndSaveTextMessage(account, contact, "Sorry, this form has expired. Please tap *Reopen* on the complaint again.")
+		return
+	}
+	a.DB.Delete(&session)
+	var g models.MCCGrievance
+	if err := a.DB.Where("id = ? AND organization_id = ? AND contact_id = ?", *session.GrievanceID, account.OrganizationID, contact.ID).First(&g).Error; err != nil {
+		_ = a.sendAndSaveTextMessage(account, contact, "Sorry, that complaint could not be found.")
+		return
+	}
+	if g.Status != models.MCCStatusResolved && g.Status != models.MCCStatusClosed {
+		_ = a.sendAndSaveTextMessage(account, contact, fmt.Sprintf("Complaint %s is already %s.", mccRef(&g), g.Status))
+		return
+	}
+	reason := strings.TrimSpace(mccString(data["reason"]))
+	if reason == "" {
+		reason = "(no reason given)"
+	}
+	a.reopenMCCGrievanceWith(account, &g, reason, a.downloadMCCPhotos(account, data["photos"]), "citizen")
+	_ = a.sendAndSaveTextMessage(account, contact, fmt.Sprintf(
+		"🔁 Complaint *%s* has been reopened and sent back to the supervisor. We will notify you once it is resolved again.", mccRef(&g)))
 }
 
 // receiveMCCReopenReason reopens the complaint with the citizen's reason
@@ -1271,12 +1356,24 @@ func (a *App) receiveMCCReopenReason(account *models.WhatsAppAccount, contact *m
 
 // reopenMCCGrievance puts a resolved grievance back with its supervisor.
 func (a *App) reopenMCCGrievance(account *models.WhatsAppAccount, g *models.MCCGrievance, reason, by string) {
+	a.reopenMCCGrievanceWith(account, g, reason, nil, by)
+}
+
+func (a *App) reopenMCCGrievanceWith(account *models.WhatsAppAccount, g *models.MCCGrievance, reason string, photos models.JSONBArray, by string) {
 	g.Status = models.MCCStatusReopened
 	g.ReopenCount++
 	g.ReopenReason = reason
+	g.ReopenPhotoURLs = photos
+	if g.ReopenPhotoURLs == nil {
+		g.ReopenPhotoURLs = models.JSONBArray{}
+	}
 	g.ResolvedAt, g.ClosedAt = nil, nil
-	g.History = append(g.History, mccHistoryEntry(models.MCCStatusReopened, by, reason))
-	err := a.DB.Model(g).Select("status", "reopen_count", "reopen_reason", "resolved_at", "closed_at", "history").Updates(g).Error
+	note := reason
+	if n := len(photos); n > 0 {
+		note += fmt.Sprintf(" (%d photo(s))", n)
+	}
+	g.History = append(g.History, mccHistoryEntry(models.MCCStatusReopened, by, note))
+	err := a.DB.Model(g).Select("status", "reopen_count", "reopen_reason", "reopen_photo_urls", "resolved_at", "closed_at", "history").Updates(g).Error
 	if err != nil {
 		a.Log.Error("Failed to reopen MCC grievance", "error", err, "grievance", g.ID)
 		return
