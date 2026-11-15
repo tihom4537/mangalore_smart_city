@@ -53,6 +53,11 @@ type MCCConfig struct {
 	// SupervisorLocationPin also sends the citizen's shared location to the
 	// supervisor as a native WhatsApp map pin after the complaint message.
 	SupervisorLocationPin bool `koanf:"supervisor_location_pin"`
+	// SupervisorRadiusM rejects a supervisor's shared location that is
+	// further than this many metres from the complaint site when they mark
+	// it in progress or close it. 0 disables the check (location still
+	// recorded).
+	SupervisorRadiusM int `koanf:"supervisor_radius_m"`
 	// ClosureFlowID is the Meta ID of the published WhatsApp Flow a
 	// supervisor fills in to close a complaint (fields action_taken,
 	// fixed_on, work_location, action_photos; data reference_no,

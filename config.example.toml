@@ -160,6 +160,11 @@ enabled = false
 # Also send the citizen's shared location to the supervisor as a native
 # WhatsApp map pin right after the complaint message.
 # supervisor_location_pin = true
+# Supervisors share their current location (WhatsApp location request) before
+# marking a complaint in progress or closing it; it is stored with its distance
+# from the complaint site. Set a radius in metres to reject locations further
+# away than that (0 = record only).
+# supervisor_radius_m = 500
 # Published WhatsApp Flow a supervisor fills in to close a complaint (fields
 # action_taken, fixed_on, work_location, action_photos; the screen's data
 # block must declare reference_no, complaint_summary and today). Without it

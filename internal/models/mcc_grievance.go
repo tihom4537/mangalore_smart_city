@@ -67,9 +67,18 @@ type MCCGrievance struct {
 	ActionPhotoURLs JSONBArray `gorm:"type:jsonb;default:'[]'" json:"action_photo_urls"`
 	FixedOn         *time.Time `json:"fixed_on"`
 	WorkLocation    string     `gorm:"type:text" json:"work_location"`
-	InProgressAt    *time.Time `json:"in_progress_at"`
-	ResolvedAt      *time.Time `json:"resolved_at"`
-	ClosedAt        *time.Time `json:"closed_at"`
+	// Where the supervisor was (shared via WhatsApp location request) when
+	// they marked the complaint in progress / closed it, and how far that is
+	// from the complaint site in metres.
+	InProgressLatitude  *float64   `json:"in_progress_latitude"`
+	InProgressLongitude *float64   `json:"in_progress_longitude"`
+	InProgressDistanceM *float64   `json:"in_progress_distance_m"`
+	ActionLatitude      *float64   `json:"action_latitude"`
+	ActionLongitude     *float64   `json:"action_longitude"`
+	ActionDistanceM     *float64   `json:"action_distance_m"`
+	InProgressAt        *time.Time `json:"in_progress_at"`
+	ResolvedAt          *time.Time `json:"resolved_at"`
+	ClosedAt            *time.Time `json:"closed_at"`
 
 	// Citizen reopen tracking.
 	ReopenCount  int    `gorm:"default:0" json:"reopen_count"`
@@ -107,6 +116,10 @@ const (
 	MCCStageAwaitingAction = "awaiting_action"
 	// Supervisor was sent the closure Flow form (FlowToken set).
 	MCCStageCloseFormSent = "close_form_sent"
+	// Supervisor tapped "In progress" / "Close complaint" and owes their
+	// current location first.
+	MCCStageAwaitingProgressLocation = "awaiting_progress_location"
+	MCCStageAwaitingCloseLocation    = "awaiting_close_location"
 	// Citizen tapped "Reopen" and owes the reason.
 	MCCStageAwaitingReopenReason = "awaiting_reopen_reason"
 )

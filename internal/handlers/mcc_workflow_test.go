@@ -2,6 +2,7 @@ package handlers
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -72,6 +73,13 @@ func fileMCCGrievance(t *testing.T, app *App, account *models.WhatsAppAccount, c
 	var g models.MCCGrievance
 	require.NoError(t, app.DB.Where("wa_message_id = ?", waMessageID).First(&g).Error)
 	return &g
+}
+
+// shareLocation answers a pending location request from the contact.
+func shareLocation(t *testing.T, app *App, account *models.WhatsAppAccount, contact *models.Contact, lat, lon float64) {
+	t.Helper()
+	require.True(t, app.handleMCCMessage(account, contact, "wamid.loc-"+uuid.NewString()[:8],
+		ExtractedMessage{Type: "location", Text: fmt.Sprintf(`{"latitude":%f,"longitude":%f}`, lat, lon)}))
 }
 
 func reloadMCCGrievance(t *testing.T, app *App, id uint64) *models.MCCGrievance {
@@ -179,17 +187,28 @@ func TestMCC_SupervisorClosesWithDetailsAndCitizenIsNotified(t *testing.T) {
 	g := fileMCCGrievance(t, app, account, citizen, "wamid.flow1")
 	id := mccIDString(g)
 
-	// In progress: citizen hears work has started.
+	// In progress: the supervisor's location is asked for first, then the
+	// citizen hears work has started.
 	require.True(t, app.handleMCCMessage(account, supContact, "wamid.s1", ExtractedMessage{Type: "button_reply", ButtonID: mccBtnProgress + id}))
+	assert.Contains(t, meta.lastMessageTo(mccTestSupervisorPhone), `"type":"location_request_message"`)
+	assert.Equal(t, models.MCCStatusAssigned, reloadMCCGrievance(t, app, g.ID).Status, "not yet")
+	shareLocation(t, app, account, supContact, 12.8700, 74.8432)
 	g = reloadMCCGrievance(t, app, g.ID)
 	assert.Equal(t, models.MCCStatusInProgress, g.Status)
 	assert.NotNil(t, g.InProgressAt)
+	require.NotNil(t, g.InProgressLatitude)
+	assert.InDelta(t, 12.87, *g.InProgressLatitude, 1e-6)
+	require.NotNil(t, g.InProgressDistanceM)
+	assert.Less(t, *g.InProgressDistanceM, 50.0)
 	assert.Contains(t, meta.lastMessageTo(citizen.PhoneNumber), "has started")
 	assert.Contains(t, meta.lastMessageTo(mccTestSupervisorPhone), mccBtnClose+id)
 
-	// Close: bot asks for details.
+	// Close: location first, then the bot asks for details.
 	require.True(t, app.handleMCCMessage(account, supContact, "wamid.s2", ExtractedMessage{Type: "button_reply", ButtonID: mccBtnClose + id}))
+	assert.Contains(t, meta.lastMessageTo(mccTestSupervisorPhone), `"type":"location_request_message"`)
+	shareLocation(t, app, account, supContact, 12.8699, 74.8431)
 	assert.Contains(t, meta.lastMessageTo(mccTestSupervisorPhone), "action taken")
+	require.NotNil(t, reloadMCCGrievance(t, app, g.ID).ActionLatitude)
 	var session models.MCCSession
 	require.NoError(t, app.DB.Where("contact_id = ?", supContact.ID).First(&session).Error)
 	assert.Equal(t, models.MCCStageAwaitingAction, session.Stage)
@@ -426,8 +445,9 @@ func TestMCC_SupervisorClosesViaFlowForm(t *testing.T) {
 	g := fileMCCGrievance(t, app, account, citizen, "wamid.flowclose")
 	id := mccIDString(g)
 
-	// Close: the flow form goes out pre-filled with the complaint.
+	// Close: location first, then the flow form goes out pre-filled with the complaint.
 	require.True(t, app.handleMCCMessage(account, supContact, "wamid.s1", ExtractedMessage{Type: "button_reply", ButtonID: mccBtnClose + id}))
+	shareLocation(t, app, account, supContact, 12.8698, 74.8430)
 	form := meta.lastMessageTo(mccTestSupervisorPhone)
 	assert.Contains(t, form, `"flow_id":"1892786508384674"`)
 	assert.Contains(t, form, mccCloseScreenID)
@@ -532,4 +552,58 @@ func TestMCC_SupervisorLocationPin(t *testing.T) {
 	require.Greater(t, len(msgs), n+1)
 	assert.Contains(t, msgs[len(msgs)-2], `"type":"interactive"`, "card")
 	assert.Contains(t, msgs[len(msgs)-1], `"type":"location"`, "then pin")
+}
+
+func TestMCC_SupervisorLocationGeofenceAndCancel(t *testing.T) {
+	app, meta, account, citizen := newMCCTestApp(t)
+	app.Config.MCC.SupervisorRadiusM = 300
+	createMCCSupervisor(t, app, account.OrganizationID, "Sup", mccTestSupervisorPhone, 37, "")
+	supContact, _, _ := contactutil.GetOrCreateContact(app.DB, account.OrganizationID, mccTestSupervisorPhone, "")
+	inWindow(t, app, supContact)
+	g := fileMCCGrievance(t, app, account, citizen, "wamid.flowgeo")
+	id := mccIDString(g)
+
+	require.True(t, app.handleMCCMessage(account, supContact, "wamid.s1", ExtractedMessage{Type: "button_reply", ButtonID: mccBtnProgress + id}))
+	var session models.MCCSession
+	require.NoError(t, app.DB.Where("contact_id = ?", supContact.ID).First(&session).Error)
+	assert.Equal(t, models.MCCStageAwaitingProgressLocation, session.Stage)
+
+	// Text instead of a location: reminded, still pending.
+	require.True(t, app.handleMCCMessage(account, supContact, "wamid.s2", ExtractedMessage{Type: "text", Text: "ok"}))
+	assert.Contains(t, meta.lastMessageTo(mccTestSupervisorPhone), `"type":"location_request_message"`)
+
+	// ~5 km away: rejected, still pending.
+	shareLocation(t, app, account, supContact, 12.9150, 74.8430)
+	last := meta.lastMessageTo(mccTestSupervisorPhone)
+	assert.Contains(t, last, "away from the site")
+	assert.Contains(t, last, "km")
+	assert.Equal(t, models.MCCStatusAssigned, reloadMCCGrievance(t, app, g.ID).Status)
+
+	// Within the radius: accepted.
+	shareLocation(t, app, account, supContact, 12.8705, 74.8435)
+	g = reloadMCCGrievance(t, app, g.ID)
+	assert.Equal(t, models.MCCStatusInProgress, g.Status)
+	require.NotNil(t, g.InProgressDistanceM)
+	assert.Less(t, *g.InProgressDistanceM, 300.0)
+
+	// Close, then cancel: nothing pending, complaint untouched.
+	require.True(t, app.handleMCCMessage(account, supContact, "wamid.s3", ExtractedMessage{Type: "button_reply", ButtonID: mccBtnClose + id}))
+	require.True(t, app.handleMCCMessage(account, supContact, "wamid.s4", ExtractedMessage{Type: "text", Text: "Cancel"}))
+	assert.Contains(t, meta.lastMessageTo(mccTestSupervisorPhone), "Cancelled")
+	var sessions int64
+	app.DB.Model(&models.MCCSession{}).Where("contact_id = ?", supContact.ID).Count(&sessions)
+	assert.Zero(t, sessions)
+	assert.Equal(t, models.MCCStatusInProgress, reloadMCCGrievance(t, app, g.ID).Status)
+
+	// A plain location with nothing pending gets the inbox, not an error.
+	shareLocation(t, app, account, supContact, 12.8705, 74.8435)
+	assert.Contains(t, meta.lastMessageTo(mccTestSupervisorPhone), "pending complaints")
+}
+
+func TestMCC_DistanceM(t *testing.T) {
+	assert.InDelta(t, 0, mccDistanceM(12.8698, 74.8430, 12.8698, 74.8430), 0.01)
+	// One degree of latitude is ~111 km.
+	assert.InDelta(t, 111195, mccDistanceM(12, 74, 13, 74), 50)
+	assert.Equal(t, "250 m", mccDistanceLabel(250))
+	assert.Equal(t, "5.0 km", mccDistanceLabel(5020))
 }

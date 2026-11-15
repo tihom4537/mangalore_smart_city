@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"math"
 	"os"
 	"path/filepath"
 	"strconv"
@@ -533,9 +534,19 @@ func (a *App) handleMCCActionButton(account *models.WhatsAppAccount, contact *mo
 				a.sendMCCLocationPin(account, contact, &g)
 			}
 		case mccBtnProgress:
-			a.mccMarkInProgress(account, contact, &g)
+			if g.Status == models.MCCStatusInProgress {
+				_ = a.sendAndSaveTextMessage(account, contact, fmt.Sprintf("%s is already marked in progress.", mccRef(&g)))
+			} else if !mccIsFinished(&g) {
+				a.requestMCCSupervisorLocation(account, contact, &g, models.MCCStageAwaitingProgressLocation)
+			} else {
+				_ = a.sendAndSaveTextMessage(account, contact, fmt.Sprintf("%s is already %s.", mccRef(&g), g.Status))
+			}
 		case mccBtnClose:
-			a.mccStartClose(account, contact, &g)
+			if mccIsFinished(&g) {
+				_ = a.sendAndSaveTextMessage(account, contact, fmt.Sprintf("%s is already %s.", mccRef(&g), g.Status))
+			} else {
+				a.requestMCCSupervisorLocation(account, contact, &g, models.MCCStageAwaitingCloseLocation)
+			}
 		}
 	case mccBtnOK, mccBtnReopen:
 		if g.ContactID != contact.ID {
@@ -555,7 +566,7 @@ func mccIsFinished(g *models.MCCGrievance) bool {
 	return g.Status == models.MCCStatusResolved || g.Status == models.MCCStatusClosed
 }
 
-func (a *App) mccMarkInProgress(account *models.WhatsAppAccount, contact *models.Contact, g *models.MCCGrievance) {
+func (a *App) mccMarkInProgress(account *models.WhatsAppAccount, contact *models.Contact, g *models.MCCGrievance, at *mccSupervisorLocation) {
 	if mccIsFinished(g) {
 		_ = a.sendAndSaveTextMessage(account, contact, fmt.Sprintf("%s is already %s.", mccRef(g), g.Status))
 		return
@@ -567,8 +578,13 @@ func (a *App) mccMarkInProgress(account *models.WhatsAppAccount, contact *models
 	now := time.Now()
 	g.Status = models.MCCStatusInProgress
 	g.InProgressAt = &now
-	g.History = append(g.History, mccHistoryEntry(models.MCCStatusInProgress, "supervisor", ""))
-	if err := a.DB.Model(g).Select("status", "in_progress_at", "history").Updates(g).Error; err != nil {
+	note := ""
+	if at != nil {
+		g.InProgressLatitude, g.InProgressLongitude, g.InProgressDistanceM = &at.Latitude, &at.Longitude, at.DistanceM
+		note = at.note()
+	}
+	g.History = append(g.History, mccHistoryEntry(models.MCCStatusInProgress, "supervisor", note))
+	if err := a.DB.Model(g).Select("status", "in_progress_at", "in_progress_latitude", "in_progress_longitude", "in_progress_distance_m", "history").Updates(g).Error; err != nil {
 		a.Log.Error("Failed to mark MCC grievance in progress", "error", err, "grievance", g.ID)
 		return
 	}
@@ -582,6 +598,146 @@ func (a *App) mccMarkInProgress(account *models.WhatsAppAccount, contact *models
 		_ = a.sendAndSaveTextMessage(account, citizen, fmt.Sprintf(
 			"Dear Citizen, work on your complaint *%s* (%s) has started. We will notify you once it is resolved.", mccRef(g), g.ComplaintType))
 	}
+}
+
+// ---------------------------------------------------------------------------
+// Supervisor location: before marking a complaint in progress or closing
+// it, the supervisor shares where they are via WhatsApp's location request.
+// WhatsApp lets the user move the pin, so the position is recorded with its
+// distance from the complaint site and optionally geofenced
+// (config supervisor_radius_m).
+// ---------------------------------------------------------------------------
+
+type mccSupervisorLocation struct {
+	Latitude  float64
+	Longitude float64
+	DistanceM *float64 // nil when the complaint has no coordinates
+}
+
+func (l *mccSupervisorLocation) note() string {
+	if l.DistanceM == nil {
+		return fmt.Sprintf("at %.5f,%.5f", l.Latitude, l.Longitude)
+	}
+	return fmt.Sprintf("at %.5f,%.5f (%s from site)", l.Latitude, l.Longitude, mccDistanceLabel(*l.DistanceM))
+}
+
+func mccIsSupervisorLocationStage(stage string) bool {
+	return stage == models.MCCStageAwaitingProgressLocation || stage == models.MCCStageAwaitingCloseLocation
+}
+
+const mccCancelKeyword = "cancel"
+
+// requestMCCSupervisorLocation asks the supervisor to share their location
+// and remembers which action it is for. If the request can't be sent the
+// action proceeds without a location.
+func (a *App) requestMCCSupervisorLocation(account *models.WhatsAppAccount, contact *models.Contact, g *models.MCCGrievance, stage string) {
+	a.saveMCCSession(&models.MCCSession{
+		ContactID:      contact.ID,
+		OrganizationID: account.OrganizationID,
+		Category:       g.Category,
+		Stage:          stage,
+		GrievanceID:    &g.ID,
+	})
+	what := "mark it *in progress*"
+	if stage == models.MCCStageAwaitingCloseLocation {
+		what = "*close* it"
+	}
+	err := a.sendMCCMessage(OutgoingMessageRequest{
+		Account: account, Contact: contact, Type: models.MessageTypeInteractive, InteractiveType: "location_request",
+		BodyText: fmt.Sprintf("📍 To %s, please share your *current location* from the complaint site for %s.\n\n"+
+			"Tap *Send location* below (choose your current location, do not move the pin). Type *cancel* to go back.", what, mccRef(g)),
+	})
+	if err != nil {
+		a.Log.Error("Failed to send MCC supervisor location request", "error", err, "grievance", g.ID, "contact", contact.PhoneNumber)
+		a.DB.Where("contact_id = ?", contact.ID).Delete(&models.MCCSession{})
+		a.continueMCCSupervisorAction(account, contact, g, stage, nil)
+	}
+}
+
+// receiveMCCSupervisorLocation checks the shared location against the
+// complaint site and carries on with the pending action.
+func (a *App) receiveMCCSupervisorLocation(account *models.WhatsAppAccount, contact *models.Contact, session *models.MCCSession, raw string) {
+	if session.GrievanceID == nil {
+		a.DB.Delete(session)
+		a.sendMCCHome(account, contact)
+		return
+	}
+	var g models.MCCGrievance
+	if err := a.DB.Where("id = ? AND organization_id = ?", *session.GrievanceID, account.OrganizationID).First(&g).Error; err != nil {
+		a.DB.Delete(session)
+		_ = a.sendAndSaveTextMessage(account, contact, "Sorry, that complaint could not be found.")
+		return
+	}
+	var in struct {
+		Latitude  float64 `json:"latitude"`
+		Longitude float64 `json:"longitude"`
+	}
+	if err := json.Unmarshal([]byte(raw), &in); err != nil || (in.Latitude == 0 && in.Longitude == 0) {
+		_ = a.sendAndSaveTextMessage(account, contact, "That location could not be read. Please tap *Send location* and try again.")
+		return
+	}
+	at := &mccSupervisorLocation{Latitude: in.Latitude, Longitude: in.Longitude}
+	if g.Latitude != nil && g.Longitude != nil {
+		d := mccDistanceM(*g.Latitude, *g.Longitude, in.Latitude, in.Longitude)
+		at.DistanceM = &d
+		if r := a.Config.MCC.SupervisorRadiusM; r > 0 && d > float64(r) {
+			_ = a.sendAndSaveTextMessage(account, contact, fmt.Sprintf(
+				"⚠️ You appear to be *%s* away from the site of %s. Please go to the site and share your current location again, or type *cancel*.",
+				mccDistanceLabel(d), mccRef(&g)))
+			return
+		}
+	}
+	a.DB.Delete(session)
+	a.continueMCCSupervisorAction(account, contact, &g, session.Stage, at)
+}
+
+// remindMCCSupervisorLocation answers text/photos sent while a location is
+// awaited; "cancel" drops the pending action.
+func (a *App) remindMCCSupervisorLocation(account *models.WhatsAppAccount, contact *models.Contact, session *models.MCCSession, extracted ExtractedMessage) {
+	if strings.EqualFold(strings.TrimSpace(extracted.Text), mccCancelKeyword) {
+		a.DB.Delete(session)
+		_ = a.sendAndSaveTextMessage(account, contact, "Cancelled. Reply anything to see your pending complaints.")
+		return
+	}
+	ref := ""
+	if session.GrievanceID != nil {
+		ref = fmt.Sprintf(" for complaint #%d", *session.GrievanceID)
+	}
+	_ = a.sendMCCMessage(OutgoingMessageRequest{
+		Account: account, Contact: contact, Type: models.MessageTypeInteractive, InteractiveType: "location_request",
+		BodyText: fmt.Sprintf("📍 Please tap *Send location* to share your current location%s, or type *cancel*.", ref),
+	})
+}
+
+func (a *App) continueMCCSupervisorAction(account *models.WhatsAppAccount, contact *models.Contact, g *models.MCCGrievance, stage string, at *mccSupervisorLocation) {
+	switch stage {
+	case models.MCCStageAwaitingProgressLocation:
+		a.mccMarkInProgress(account, contact, g, at)
+	case models.MCCStageAwaitingCloseLocation:
+		if at != nil {
+			g.ActionLatitude, g.ActionLongitude, g.ActionDistanceM = &at.Latitude, &at.Longitude, at.DistanceM
+			if err := a.DB.Model(g).Select("action_latitude", "action_longitude", "action_distance_m").Updates(g).Error; err != nil {
+				a.Log.Error("Failed to save MCC action location", "error", err, "grievance", g.ID)
+			}
+		}
+		a.mccStartClose(account, contact, g)
+	}
+}
+
+// mccDistanceM is the haversine distance in metres.
+func mccDistanceM(lat1, lon1, lat2, lon2 float64) float64 {
+	const r = 6371000.0
+	toRad := func(d float64) float64 { return d * math.Pi / 180 }
+	dLat, dLon := toRad(lat2-lat1), toRad(lon2-lon1)
+	h := math.Sin(dLat/2)*math.Sin(dLat/2) + math.Cos(toRad(lat1))*math.Cos(toRad(lat2))*math.Sin(dLon/2)*math.Sin(dLon/2)
+	return 2 * r * math.Asin(math.Sqrt(h))
+}
+
+func mccDistanceLabel(m float64) string {
+	if m < 1000 {
+		return fmt.Sprintf("%.0f m", m)
+	}
+	return fmt.Sprintf("%.1f km", m/1000)
 }
 
 // mccStartClose asks the supervisor for the action-taken details.
@@ -787,6 +943,9 @@ func (a *App) closeMCCGrievanceWith(account *models.WhatsAppAccount, g *models.M
 	}
 	if c.Location != "" {
 		note += " | at " + c.Location
+	}
+	if g.ActionLatitude != nil && g.ActionLongitude != nil {
+		note += " | " + (&mccSupervisorLocation{Latitude: *g.ActionLatitude, Longitude: *g.ActionLongitude, DistanceM: g.ActionDistanceM}).note()
 	}
 	g.History = append(g.History, mccHistoryEntry(models.MCCStatusResolved, by, note))
 	if err := a.DB.Model(g).Select("status", "action_taken", "action_photo_urls", "fixed_on", "work_location", "resolved_at", "history").Updates(g).Error; err != nil {

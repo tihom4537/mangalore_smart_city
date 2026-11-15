@@ -95,6 +95,10 @@ func (a *App) handleMCCMessage(account *models.WhatsAppAccount, contact *models.
 			a.sendMCCForm(account, contact, form, a.resolveMCCLocation(extracted.Text))
 			return true
 		}
+		if session := a.loadMCCSession(contact); session != nil && mccIsSupervisorLocationStage(session.Stage) {
+			a.receiveMCCSupervisorLocation(account, contact, session, extracted.Text)
+			return true
+		}
 		a.sendMCCHome(account, contact)
 		return true
 
@@ -106,6 +110,9 @@ func (a *App) handleMCCMessage(account *models.WhatsAppAccount, contact *models.
 				return true
 			case models.MCCStageAwaitingReopenReason:
 				a.receiveMCCReopenReason(account, contact, session, extracted)
+				return true
+			case models.MCCStageAwaitingProgressLocation, models.MCCStageAwaitingCloseLocation:
+				a.remindMCCSupervisorLocation(account, contact, session, extracted)
 				return true
 			case models.MCCStageAwaitingLocation:
 				// Any text while a location is awaited means "skip".
@@ -148,7 +155,8 @@ func (a *App) loadMCCSession(contact *models.Contact) *models.MCCSession {
 	}
 	ttl := mccSessionTTL
 	switch session.Stage {
-	case models.MCCStageAwaitingAction, models.MCCStageAwaitingReopenReason, models.MCCStageCloseFormSent:
+	case models.MCCStageAwaitingAction, models.MCCStageAwaitingReopenReason, models.MCCStageCloseFormSent,
+		models.MCCStageAwaitingProgressLocation, models.MCCStageAwaitingCloseLocation:
 		ttl = mccActionTTL
 	}
 	if time.Since(session.UpdatedAt) > ttl {
