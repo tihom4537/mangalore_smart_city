@@ -1,8 +1,10 @@
 package handlers
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"image/jpeg"
 	"os"
 	"path/filepath"
 	"strings"
@@ -621,4 +623,56 @@ func TestMCC_DistanceM(t *testing.T) {
 	assert.InDelta(t, 111195, mccDistanceM(12, 74, 13, 74), 50)
 	assert.Equal(t, "250 m", mccDistanceLabel(250))
 	assert.Equal(t, "5.0 km", mccDistanceLabel(5020))
+}
+
+func TestMCC_ClosureTemplateCarriesBeforeAfterImage(t *testing.T) {
+	app, meta, account, citizen := newMCCTestApp(t)
+	app.Config.MCC.CitizenClosureTemplate = "mcc_complaint_resolved"
+	app.Config.MCC.ClosureFlowID = "1892786508384674"
+	createMCCSupervisor(t, app, account.OrganizationID, "Sup", mccTestSupervisorPhone, 37, "")
+	tpl := testutil.CreateTestTemplate(t, app.DB, account.OrganizationID, account.Name)
+	tpl.Name = "mcc_complaint_resolved"
+	tpl.HeaderType = "IMAGE"
+	tpl.Buttons = models.JSONBArray{
+		map[string]any{"type": "QUICK_REPLY", "text": "Satisfied"},
+		map[string]any{"type": "QUICK_REPLY", "text": "Reopen"},
+	}
+	require.NoError(t, app.DB.Save(tpl).Error)
+	supContact, _, _ := contactutil.GetOrCreateContact(app.DB, account.OrganizationID, mccTestSupervisorPhone, "")
+	inWindow(t, app, supContact)
+	// The citizen is outside their window: only a template can reach them.
+	g := fileMCCGrievance(t, app, account, citizen, "wamid.flowtpl")
+	id := mccIDString(g)
+
+	require.True(t, app.handleMCCMessage(account, supContact, "wamid.s1", ExtractedMessage{Type: "button_reply", ButtonID: mccBtnClose + id}))
+	shareLocation(t, app, account, supContact, 12.8698, 74.8430)
+	var session models.MCCSession
+	require.NoError(t, app.DB.Where("contact_id = ?", supContact.ID).First(&session).Error)
+	citizenBefore := len(meta.messagesTo(citizen.PhoneNumber))
+	uploadsBefore := meta.count("POST /v18.0/" + account.PhoneID + "/media")
+	require.True(t, app.handleMCCMessage(account, supContact, "wamid.s2", ExtractedMessage{Type: "nfm_reply", FlowResponseData: map[string]any{
+		"flow_token": session.FlowToken, "action_taken": "Cleared and disinfected", "fixed_on": "2026-11-14",
+		"work_location": "Maroli", "action_photos": []any{map[string]any{"id": "media-photo-1", "mime_type": "image/jpeg"}},
+	}}))
+
+	g = reloadMCCGrievance(t, app, g.ID)
+	assert.Equal(t, models.MCCStatusResolved, g.Status)
+	assert.NotEmpty(t, g.BeforeAfterURL)
+	data, mime, err := app.readMCCMedia(g.BeforeAfterURL)
+	require.NoError(t, err)
+	assert.Equal(t, "image/jpeg", mime)
+	img, err := jpeg.Decode(bytes.NewReader(data))
+	require.NoError(t, err)
+	assert.Equal(t, mccCompositeW, img.Bounds().Dx())
+
+	msgs := meta.messagesTo(citizen.PhoneNumber)[citizenBefore:]
+	require.Len(t, msgs, 1, "template only")
+	assert.Equal(t, uploadsBefore+1, meta.count("POST /v18.0/"+account.PhoneID+"/media"), "composite uploaded for the header")
+	assert.Contains(t, msgs[0], `"name":"mcc_complaint_resolved"`)
+	assert.Contains(t, msgs[0], `"image":{"id":"uploaded-`)
+	assert.Contains(t, msgs[0], `"text":"`+mccRef(g)+`"`)
+	assert.Contains(t, msgs[0], `"text":"Cleared and disinfected"`)
+	assert.Contains(t, msgs[0], `"text":"14 Nov 2026"`)
+	assert.Contains(t, msgs[0], `"payload":"`+mccBtnOK+id+`"`)
+	assert.Contains(t, msgs[0], `"payload":"`+mccBtnReopen+id+`"`)
 }

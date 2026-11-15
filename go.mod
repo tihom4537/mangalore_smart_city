@@ -10,7 +10,9 @@ require (
 	github.com/dop251/goja v0.0.0-20260106131823-651366fbe6e3
 	github.com/expr-lang/expr v1.17.8
 	github.com/fasthttp/websocket v1.5.12
+	github.com/fogleman/gg v1.3.0
 	github.com/golang-jwt/jwt/v5 v5.3.0
+	github.com/golang/freetype v0.0.0-20170609003504-e2365dfdc4a0
 	github.com/google/uuid v1.6.0
 	github.com/knadh/koanf/parsers/toml v0.1.0
 	github.com/knadh/koanf/providers/env v1.1.0
@@ -24,6 +26,7 @@ require (
 	github.com/zerodha/fastglue v1.8.0
 	github.com/zerodha/logf v0.5.5
 	golang.org/x/crypto v0.57.0
+	golang.org/x/image v0.18.0
 	golang.org/x/oauth2 v0.34.0
 	gorm.io/driver/postgres v1.5.6
 	gorm.io/gorm v1.25.7

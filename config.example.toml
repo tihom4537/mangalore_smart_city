@@ -151,9 +151,10 @@ enabled = false
 # button that opens the complaint. Without it the complaint goes out free-form,
 # which Meta only allows inside the supervisor's 24h window.
 # supervisor_template = "mcc_new_complaint"
-# Likewise for the closure notice to a citizen whose window has lapsed:
-# body params {{1}} complaint ID, {{2}} type, {{3}} action taken, and two
-# QUICK_REPLY buttons (Satisfied, Reopen).
+# Likewise the closure notice to the citizen: image header = rendered
+# before/after photo composite, body params {{1}} complaint ID, {{2}} type,
+# {{3}} action taken, {{4}} date fixed, and two QUICK_REPLY buttons
+# (Satisfied, Reopen). Without it the notice is free-form (24h window only).
 # citizen_closure_template = "mcc_complaint_resolved"
 # Map link format for the citizen's shared location (lat, lon)
 # maps_url = "https://www.google.com/maps?q=%f,%f"

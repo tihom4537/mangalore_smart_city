@@ -67,6 +67,9 @@ type MCCGrievance struct {
 	ActionPhotoURLs JSONBArray `gorm:"type:jsonb;default:'[]'" json:"action_photo_urls"`
 	FixedOn         *time.Time `json:"fixed_on"`
 	WorkLocation    string     `gorm:"type:text" json:"work_location"`
+	// BeforeAfterURL is the rendered before/after composite sent to the
+	// citizen with the closure notice.
+	BeforeAfterURL string `gorm:"size:512" json:"before_after_url"`
 	// Where the supervisor was (shared via WhatsApp location request) when
 	// they marked the complaint in progress / closed it, and how far that is
 	// from the complaint site in metres.

@@ -44,9 +44,11 @@ type MCCConfig struct {
 	// body params {{1}} complaint ID, {{2}} type, {{3}} ward, {{4}} address,
 	// {{5}} details, {{6}} resolution timeline. Empty: free-form card.
 	SupervisorTemplate string `koanf:"supervisor_template"`
-	// CitizenClosureTemplate notifies a citizen of closure outside their
-	// window. Body params: {{1}} complaint ID, {{2}} type, {{3}} action
-	// taken; its two QUICK_REPLY buttons are Satisfied / Reopen.
+	// CitizenClosureTemplate is the approved template that notifies a
+	// citizen of closure (always, when set): image header = before/after
+	// composite, body params {{1}} complaint ID, {{2}} type, {{3}} action
+	// taken, {{4}} date fixed; two QUICK_REPLY buttons Satisfied / Reopen.
+	// Empty: free-form notice (only deliverable inside the 24h window).
 	CitizenClosureTemplate string `koanf:"citizen_closure_template"`
 	// MapsURL formats the shared location link sent to the supervisor.
 	MapsURL string `koanf:"maps_url"`

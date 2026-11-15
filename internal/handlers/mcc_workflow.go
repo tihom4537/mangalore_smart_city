@@ -1005,43 +1005,107 @@ func (a *App) notifyMCCCitizenClosure(account *models.WhatsAppAccount, g *models
 	if citizen == nil {
 		return
 	}
-	id := mccIDString(g)
 	var err error
-	if !mccInServiceWindow(citizen) && a.Config.MCC.CitizenClosureTemplate != "" {
-		var tpl *models.Template
-		tpl, err = a.mccTemplate(account, a.Config.MCC.CitizenClosureTemplate)
-		if err == nil {
-			err = a.sendMCCMessage(OutgoingMessageRequest{
-				Account: account, Contact: citizen, Type: models.MessageTypeTemplate, Template: tpl,
-				BodyParams:         map[string]string{"1": mccRef(g), "2": g.ComplaintType, "3": mccOneLine(g.ActionTaken, 300)},
-				QuickReplyPayloads: mccQuickReplyPayloads(tpl, mccBtnOK+id, mccBtnReopen+id),
-			})
+	if a.Config.MCC.CitizenClosureTemplate != "" {
+		err = a.sendMCCClosureTemplate(account, citizen, g)
+		if err != nil {
+			a.Log.Error("MCC closure template failed, trying free-form", "error", err, "grievance", g.ID)
 		}
-	} else {
-		for i, raw := range g.ActionPhotoURLs {
-			path, _ := raw.(string)
-			data, mime, rerr := a.readMCCMedia(path)
-			if rerr != nil {
-				continue
-			}
-			_ = a.sendMCCMessage(OutgoingMessageRequest{
-				Account: account, Contact: citizen, Type: models.MessageTypeImage,
-				MediaData: data, MediaMimeType: mime, MediaURL: path, MediaFilename: filepath.Base(path),
-				Caption: fmt.Sprintf("%s – work completed, photo %d/%d", mccRef(g), i+1, len(g.ActionPhotoURLs)),
-			})
-		}
-		err = a.sendMCCMessage(OutgoingMessageRequest{
-			Account: account, Contact: citizen, Type: models.MessageTypeInteractive, InteractiveType: "button",
-			BodyText: mccClosureText(g),
-			Buttons: []whatsapp.Button{
-				{ID: mccBtnOK + id, Title: "👍 Satisfied"},
-				{ID: mccBtnReopen + id, Title: "🔁 Reopen"},
-			},
-		})
+	}
+	if a.Config.MCC.CitizenClosureTemplate == "" || err != nil {
+		err = a.sendMCCClosureFreeForm(account, citizen, g)
 	}
 	if err != nil {
 		a.Log.Error("Failed to notify MCC citizen of closure", "error", err, "grievance", g.ID)
 	}
+}
+
+// sendMCCClosureTemplate sends the approved closure template: image header
+// = before/after composite, body params {{1}} complaint ID, {{2}} type,
+// {{3}} action taken, {{4}} date fixed; quick replies Satisfied / Reopen.
+func (a *App) sendMCCClosureTemplate(account *models.WhatsAppAccount, citizen *models.Contact, g *models.MCCGrievance) error {
+	tpl, err := a.mccTemplate(account, a.Config.MCC.CitizenClosureTemplate)
+	if err != nil {
+		return err
+	}
+	id := mccIDString(g)
+	req := OutgoingMessageRequest{
+		Account: account, Contact: citizen, Type: models.MessageTypeTemplate, Template: tpl,
+		BodyParams: map[string]string{
+			"1": mccRef(g), "2": g.ComplaintType, "3": mccOneLine(g.ActionTaken, 300), "4": mccFixedOnLabel(g),
+		},
+		QuickReplyPayloads: mccQuickReplyPayloads(tpl, mccBtnOK+id, mccBtnReopen+id),
+	}
+	if strings.EqualFold(tpl.HeaderType, "IMAGE") {
+		path, err := a.ensureMCCComposite(g)
+		if err != nil {
+			return fmt.Errorf("before/after image: %w", err)
+		}
+		mediaID, filename, err := a.uploadMCCPhoto(account, models.JSONBArray{path})
+		if err != nil {
+			return fmt.Errorf("template header image: %w", err)
+		}
+		req.HeaderMediaID, req.HeaderMediaFilename = mediaID, filename
+	}
+	return a.sendMCCMessage(req)
+}
+
+// ensureMCCComposite renders and stores the before/after image once.
+func (a *App) ensureMCCComposite(g *models.MCCGrievance) (string, error) {
+	if g.BeforeAfterURL != "" {
+		if _, _, err := a.readMCCMedia(g.BeforeAfterURL); err == nil {
+			return g.BeforeAfterURL, nil
+		}
+	}
+	data, err := a.renderMCCBeforeAfter(g)
+	if err != nil {
+		return "", err
+	}
+	path, err := a.saveMCCComposite(g, data)
+	if err != nil {
+		return "", err
+	}
+	g.BeforeAfterURL = path
+	if err := a.DB.Model(g).Update("before_after_url", path).Error; err != nil {
+		a.Log.Error("Failed to save MCC composite path", "error", err, "grievance", g.ID)
+	}
+	return path, nil
+}
+
+func mccFixedOnLabel(g *models.MCCGrievance) string {
+	when := time.Now()
+	if g.FixedOn != nil {
+		when = *g.FixedOn
+	} else if g.ResolvedAt != nil {
+		when = *g.ResolvedAt
+	}
+	return when.In(mccIST).Format("02 Jan 2006")
+}
+
+// sendMCCClosureFreeForm is the closure notice inside the citizen's 24h
+// window when no template is configured (or it failed): the before/after
+// image, then the text with Satisfied / Reopen buttons.
+func (a *App) sendMCCClosureFreeForm(account *models.WhatsAppAccount, citizen *models.Contact, g *models.MCCGrievance) error {
+	id := mccIDString(g)
+	if path, err := a.ensureMCCComposite(g); err == nil {
+		if data, mime, rerr := a.readMCCMedia(path); rerr == nil {
+			_ = a.sendMCCMessage(OutgoingMessageRequest{
+				Account: account, Contact: citizen, Type: models.MessageTypeImage,
+				MediaData: data, MediaMimeType: mime, MediaURL: path, MediaFilename: filepath.Base(path),
+				Caption: mccRef(g) + " – before and after",
+			})
+		}
+	} else {
+		a.Log.Warn("MCC before/after image unavailable", "error", err, "grievance", g.ID)
+	}
+	return a.sendMCCMessage(OutgoingMessageRequest{
+		Account: account, Contact: citizen, Type: models.MessageTypeInteractive, InteractiveType: "button",
+		BodyText: mccClosureText(g),
+		Buttons: []whatsapp.Button{
+			{ID: mccBtnOK + id, Title: "👍 Satisfied"},
+			{ID: mccBtnReopen + id, Title: "🔁 Reopen"},
+		},
+	})
 }
 
 func mccClosureText(g *models.MCCGrievance) string {
