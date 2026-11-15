@@ -58,10 +58,10 @@ type MCCConfig struct {
 	// it in progress or close it. 0 disables the check (location still
 	// recorded).
 	SupervisorRadiusM int `koanf:"supervisor_radius_m"`
-	// ClosureFlowID is the Meta ID of the published WhatsApp Flow a
-	// supervisor fills in to close a complaint (fields action_taken,
-	// fixed_on, work_location, action_photos; data reference_no,
-	// complaint_summary, today). Empty: the details are asked as free text.
+	// ClosureFlowID overrides the bot-managed closure Flow with a hand-made
+	// one taking the same data (reference_no, complaint_summary, today,
+	// address) and payload (action_taken, fixed_on, work_location,
+	// action_photos).
 	ClosureFlowID string `koanf:"closure_flow_id"`
 	// ClosureFlowScreen is the flow's first screen ID (default CLOSE_COMPLAINT).
 	ClosureFlowScreen string `koanf:"closure_flow_screen"`

@@ -244,3 +244,83 @@ func (f *mccForm) screens() []any {
 func (f *mccForm) flowJSON() *whatsapp.FlowJSON {
 	return &whatsapp.FlowJSON{Version: mccJSONVersion, Screens: f.screens()}
 }
+
+// mccFlowDef is a WhatsApp Flow the bot creates and publishes on Meta.
+type mccFlowDef interface {
+	metaName() string
+	screens() []any
+}
+
+func (f *mccForm) metaName() string { return f.MetaName }
+
+// mccCloseForm is the supervisor's closure (action report) form. Bump the
+// name when the JSON changes so a fresh flow is created on Meta.
+type mccCloseForm struct{}
+
+const (
+	mccCloseFormName   = "MMP Close Complaint v1"
+	mccCloseScreenID   = "CLOSE_COMPLAINT"
+	mccCloseFormHeader = "Close complaint"
+)
+
+func (mccCloseForm) metaName() string { return mccCloseFormName }
+
+// screens: data reference_no, complaint_summary, today and address (the
+// supervisor's shared location, reverse geocoded) pre-fill the form; the
+// payload keys are read by receiveMCCCloseForm.
+func (mccCloseForm) screens() []any {
+	return []any{
+		map[string]any{
+			"id":       mccCloseScreenID,
+			"title":    mccCloseFormHeader,
+			"terminal": true,
+			"success":  true,
+			"data": map[string]any{
+				"reference_no":      map[string]any{"type": "string", "__example__": "MMP-SW-000007"},
+				"complaint_summary": map[string]any{"type": "string", "__example__": "Garbage not collected - Ward 12, Hampankatta"},
+				"today":             map[string]any{"type": "string", "__example__": "2026-11-12"},
+				"address":           map[string]any{"type": "string", "__example__": "Near Hampankatta Circle, Mangaluru"},
+			},
+			"layout": map[string]any{
+				"type": "SingleColumnLayout",
+				"children": []any{
+					map[string]any{"type": "TextSubheading", "text": "Mangaluru Mahanagara Palike - Action report"},
+					map[string]any{"type": "TextBody", "text": "Complaint ${data.reference_no}"},
+					map[string]any{"type": "TextCaption", "text": "${data.complaint_summary}"},
+					map[string]any{
+						"type": "TextArea", "name": "action_taken", "label": "What was done?",
+						"required": true, "max-length": 600,
+						"helper-text": "Describe the work carried out and by whom.",
+					},
+					map[string]any{
+						"type": "DatePicker", "name": "fixed_on", "label": "Date of fixing",
+						"required": true, "init-value": "${data.today}", "max-date": "${data.today}",
+						"helper-text": "Cannot be a future date.",
+					},
+					map[string]any{
+						"type": "TextArea", "name": "work_location", "label": "Location of work",
+						"required": true, "max-length": 300, "init-value": "${data.address}",
+						"helper-text": "Filled from the location you shared. Edit or add a landmark if needed.",
+					},
+					map[string]any{
+						"type": "PhotoPicker", "name": "action_photos", "label": "Photos of completed work",
+						"description":  "Take a photo at the site or upload from gallery (1 to 3)",
+						"photo-source": "camera_gallery", "min-uploaded-photos": 1, "max-uploaded-photos": 3,
+					},
+					map[string]any{
+						"type": "Footer", "label": "Mark as resolved",
+						"on-click-action": map[string]any{
+							"name": "complete",
+							"payload": map[string]any{
+								"action_taken":  "${form.action_taken}",
+								"fixed_on":      "${form.fixed_on}",
+								"work_location": "${form.work_location}",
+								"action_photos": "${form.action_photos}",
+							},
+						},
+					},
+				},
+			},
+		},
+	}
+}

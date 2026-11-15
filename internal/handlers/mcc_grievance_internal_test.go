@@ -7,6 +7,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/shridarpatil/whatomate/internal/models"
+	"github.com/shridarpatil/whatomate/pkg/whatsapp"
 )
 
 // Meta rejects Flow JSON that exceeds these limits at upload time, which
@@ -169,5 +170,24 @@ func TestMCCFormLookup(t *testing.T) {
 	}
 	if mccFormByButton("other_button") != nil || mccFormByCategory("nope") != nil {
 		t.Error("unknown IDs must not match a form")
+	}
+}
+
+func TestMCC_CloseFormJSON(t *testing.T) {
+	raw, err := json.Marshal(&whatsapp.FlowJSON{Version: mccJSONVersion, Screens: mccCloseForm{}.screens()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"id":"CLOSE_COMPLAINT"`, `"init-value":"${data.address}"`, `"name":"work_location"`,
+		`"max-uploaded-photos":3`, `"action_photos":"${form.action_photos}"`} {
+		if !strings.Contains(string(raw), want) {
+			t.Errorf("close form JSON missing %s", want)
+		}
+	}
+	screen := mccCloseForm{}.screens()[0].(map[string]any)
+	for _, key := range []string{"reference_no", "complaint_summary", "today", "address"} {
+		if _, ok := screen["data"].(map[string]any)[key]; !ok {
+			t.Errorf("close form must declare data.%s", key)
+		}
 	}
 }

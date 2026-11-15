@@ -12,6 +12,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/shridarpatil/whatomate/internal/models"
+	"github.com/shridarpatil/whatomate/pkg/whatsapp"
 	"gorm.io/gorm"
 	"gorm.io/gorm/clause"
 )
@@ -333,9 +334,10 @@ const mccFormUnavailableText = "Sorry, the complaint form is temporarily unavail
 // ensureMCCFlow returns the Meta flow for form, creating, uploading and
 // publishing it the first time. Existing flows (in our DB or on Meta) are
 // reused by name.
-func (a *App) ensureMCCFlow(account *models.WhatsAppAccount, form *mccForm) (*models.WhatsAppFlow, error) {
+func (a *App) ensureMCCFlow(account *models.WhatsAppAccount, def mccFlowDef) (*models.WhatsAppFlow, error) {
 	mccFlowMu.Lock()
 	defer mccFlowMu.Unlock()
+	form := struct{ MetaName string }{def.metaName()}
 
 	ctx := context.Background()
 	waAccount := a.toWhatsAppAccount(account)
@@ -375,7 +377,7 @@ func (a *App) ensureMCCFlow(account *models.WhatsAppAccount, form *mccForm) (*mo
 		status = "DRAFT"
 	}
 	if status != "PUBLISHED" {
-		if err := a.WhatsApp.UpdateFlowJSON(ctx, waAccount, metaFlowID, form.flowJSON()); err != nil {
+		if err := a.WhatsApp.UpdateFlowJSON(ctx, waAccount, metaFlowID, &whatsapp.FlowJSON{Version: mccJSONVersion, Screens: def.screens()}); err != nil {
 			return nil, fmt.Errorf("upload flow json: %w", err)
 		}
 		if err := a.WhatsApp.PublishFlow(ctx, waAccount, metaFlowID); err != nil {
@@ -386,7 +388,7 @@ func (a *App) ensureMCCFlow(account *models.WhatsAppAccount, form *mccForm) (*mo
 		}
 	}
 
-	screens := form.screens()
+	screens := def.screens()
 	flow = models.WhatsAppFlow{
 		OrganizationID:  account.OrganizationID,
 		WhatsAppAccount: account.Name,

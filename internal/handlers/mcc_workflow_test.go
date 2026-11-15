@@ -203,18 +203,30 @@ func TestMCC_SupervisorClosesWithDetailsAndCitizenIsNotified(t *testing.T) {
 	assert.Contains(t, meta.lastMessageTo(citizen.PhoneNumber), "has started")
 	assert.Contains(t, meta.lastMessageTo(mccTestSupervisorPhone), mccBtnClose+id)
 
-	// Close: location first, then the bot asks for details.
+	// Close: location first, then the bot's own closure flow goes out with
+	// the address of that location pre-filled.
 	require.True(t, app.handleMCCMessage(account, supContact, "wamid.s2", ExtractedMessage{Type: "button_reply", ButtonID: mccBtnClose + id}))
 	assert.Contains(t, meta.lastMessageTo(mccTestSupervisorPhone), `"type":"location_request_message"`)
 	shareLocation(t, app, account, supContact, 12.8699, 74.8431)
-	assert.Contains(t, meta.lastMessageTo(mccTestSupervisorPhone), "action taken")
+	form := meta.lastMessageTo(mccTestSupervisorPhone)
+	assert.Contains(t, form, `"flow_id":"meta-flow-1"`, "flow created on Meta by the bot")
+	assert.Contains(t, form, `"address":"Hampankatta, Mangaluru`)
+	assert.Contains(t, form, `"reference_no":"`+mccRef(g)+`"`)
+	assert.Equal(t, 1, meta.count("POST /v18.0/"+account.BusinessID+"/flows"), "closure flow created once")
+	var createdFlow models.WhatsAppFlow
+	require.NoError(t, app.DB.Where("name = ?", mccCloseFormName).First(&createdFlow).Error)
 	require.NotNil(t, reloadMCCGrievance(t, app, g.ID).ActionLatitude)
 	var session models.MCCSession
 	require.NoError(t, app.DB.Where("contact_id = ?", supContact.ID).First(&session).Error)
-	assert.Equal(t, models.MCCStageAwaitingAction, session.Stage)
+	assert.Equal(t, models.MCCStageCloseFormSent, session.Stage)
 	require.NotNil(t, session.GrievanceID)
 	assert.Equal(t, g.ID, *session.GrievanceID)
 
+	// Free-text fallback (used when the flow can't be sent): photo without
+	// caption is kept and text is asked for.
+	session.Stage = models.MCCStageAwaitingAction
+	session.FlowToken = ""
+	app.saveMCCSession(&session)
 	// A photo without caption is kept and text is asked for.
 	photoPath := filepath.Join("images", "done.jpg")
 	require.NoError(t, os.MkdirAll(filepath.Join(app.Config.Storage.LocalPath, "images"), 0o755))
@@ -445,11 +457,14 @@ func TestMCC_SupervisorClosesViaFlowForm(t *testing.T) {
 	g := fileMCCGrievance(t, app, account, citizen, "wamid.flowclose")
 	id := mccIDString(g)
 
-	// Close: location first, then the flow form goes out pre-filled with the complaint.
+	// Close: location first, then the (configured) flow form goes out
+	// pre-filled with the complaint and the shared location's address.
 	require.True(t, app.handleMCCMessage(account, supContact, "wamid.s1", ExtractedMessage{Type: "button_reply", ButtonID: mccBtnClose + id}))
 	shareLocation(t, app, account, supContact, 12.8698, 74.8430)
 	form := meta.lastMessageTo(mccTestSupervisorPhone)
-	assert.Contains(t, form, `"flow_id":"1892786508384674"`)
+	assert.Contains(t, form, `"flow_id":"1892786508384674"`, "configured flow overrides the bot's")
+	assert.Zero(t, meta.count("POST /v18.0/"+account.BusinessID+"/flows"))
+	assert.Contains(t, form, `"address":"Hampankatta, Mangaluru`)
 	assert.Contains(t, form, mccCloseScreenID)
 	assert.Contains(t, form, `"reference_no":"`+mccRef(g)+`"`)
 	assert.Contains(t, form, `"today":"`)

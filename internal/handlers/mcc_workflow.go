@@ -714,14 +714,28 @@ func (a *App) continueMCCSupervisorAction(account *models.WhatsAppAccount, conta
 	case models.MCCStageAwaitingProgressLocation:
 		a.mccMarkInProgress(account, contact, g, at)
 	case models.MCCStageAwaitingCloseLocation:
+		address := ""
 		if at != nil {
 			g.ActionLatitude, g.ActionLongitude, g.ActionDistanceM = &at.Latitude, &at.Longitude, at.DistanceM
 			if err := a.DB.Model(g).Select("action_latitude", "action_longitude", "action_distance_m").Updates(g).Error; err != nil {
 				a.Log.Error("Failed to save MCC action location", "error", err, "grievance", g.ID)
 			}
+			address = a.mccAddressFor(at.Latitude, at.Longitude)
 		}
-		a.mccStartClose(account, contact, g)
+		a.mccStartClose(account, contact, g, address)
 	}
+}
+
+// mccAddressFor reverse geocodes a point; "" when the geocoder fails.
+func (a *App) mccAddressFor(lat, lon float64) string {
+	ctx, cancel := context.WithTimeout(context.Background(), mccGeocodeTimeout)
+	defer cancel()
+	addr, err := a.reverseGeocodeMCC(ctx, lat, lon)
+	if err != nil {
+		a.Log.Warn("MCC reverse geocoding failed", "error", err, "lat", lat, "lon", lon)
+		return ""
+	}
+	return addr
 }
 
 // mccDistanceM is the haversine distance in metres.
@@ -741,12 +755,12 @@ func mccDistanceLabel(m float64) string {
 }
 
 // mccStartClose asks the supervisor for the action-taken details.
-func (a *App) mccStartClose(account *models.WhatsAppAccount, contact *models.Contact, g *models.MCCGrievance) {
+func (a *App) mccStartClose(account *models.WhatsAppAccount, contact *models.Contact, g *models.MCCGrievance, address string) {
 	if mccIsFinished(g) {
 		_ = a.sendAndSaveTextMessage(account, contact, fmt.Sprintf("%s is already %s.", mccRef(g), g.Status))
 		return
 	}
-	if a.Config.MCC.ClosureFlowID != "" && a.sendMCCCloseForm(account, contact, g) {
+	if a.sendMCCCloseForm(account, contact, g, address) {
 		return
 	}
 	a.saveMCCSession(&models.MCCSession{
@@ -765,7 +779,6 @@ func (a *App) mccStartClose(account *models.WhatsAppAccount, contact *models.Con
 // "mcc:close:<grievance id>:<uuid>" so the nfm_reply is routed here.
 const (
 	mccCloseFlowCategory = "close"
-	mccCloseScreenID     = "CLOSE_COMPLAINT"
 	mccCloseFlowCTA      = "Fill action report"
 	mccCloseDateLayout   = "2006-01-02"
 )
@@ -773,9 +786,23 @@ const (
 var mccIST = time.FixedZone("IST", 5*3600+1800)
 
 // sendMCCCloseForm sends the closure Flow pre-filled with the complaint
-// and remembers the token. It returns false when the form couldn't be sent
-// so the caller can fall back to asking for free text.
-func (a *App) sendMCCCloseForm(account *models.WhatsAppAccount, contact *models.Contact, g *models.MCCGrievance) bool {
+// and the address of the supervisor's shared location, and remembers the
+// token. The flow is the bot's own (mccCloseForm) unless [mcc]
+// closure_flow_id names one with the same data keys. It returns false when
+// the form couldn't be sent so the caller can fall back to free text.
+func (a *App) sendMCCCloseForm(account *models.WhatsAppAccount, contact *models.Contact, g *models.MCCGrievance, address string) bool {
+	flowID, mode := a.Config.MCC.ClosureFlowID, ""
+	if flowID == "" {
+		flow, err := a.ensureMCCFlow(account, mccCloseForm{})
+		if err != nil {
+			a.Log.Error("MCC closure flow unavailable", "error", err)
+			return false
+		}
+		flowID = flow.MetaFlowID
+		if flow.Status != "PUBLISHED" {
+			mode = "draft"
+		}
+	}
 	token := fmt.Sprintf("%s%s:%d:%s", mccFlowTokenPrefix, mccCloseFlowCategory, g.ID, uuid.NewString())
 	a.saveMCCSession(&models.MCCSession{
 		ContactID:      contact.ID,
@@ -793,8 +820,9 @@ func (a *App) sendMCCCloseForm(account *models.WhatsAppAccount, contact *models.
 		Account:         account,
 		Contact:         contact,
 		Type:            models.MessageTypeFlow,
-		FlowID:          a.Config.MCC.ClosureFlowID,
-		FlowHeader:      "Close complaint",
+		FlowID:          flowID,
+		FlowMode:        mode,
+		FlowHeader:      mccCloseFormHeader,
 		BodyText:        fmt.Sprintf("Closing *%s*. Tap the button below and fill in the action taken, the date, the location and photos of the completed work.", mccRef(g)),
 		FlowCTA:         mccCloseFlowCTA,
 		FlowToken:       token,
@@ -803,6 +831,7 @@ func (a *App) sendMCCCloseForm(account *models.WhatsAppAccount, contact *models.
 			"reference_no":      mccRef(g),
 			"complaint_summary": mccOneLine(fmt.Sprintf("%s - %s, %s", g.ComplaintType, mccWardLabel(g), g.Address), 120),
 			"today":             time.Now().In(mccIST).Format(mccCloseDateLayout),
+			"address":           truncateRunes(address, 300),
 		},
 	})
 	if err != nil {
