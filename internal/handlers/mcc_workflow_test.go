@@ -333,12 +333,27 @@ func TestMCC_SupervisorInboxAndAuthorization(t *testing.T) {
 	g := fileMCCGrievance(t, app, account, citizen, "wamid.flow1")
 	id := mccIDString(g)
 
-	// Supervisor text -> inbox list, not the citizen menu.
+	// Supervisor text -> dashboard menu, not the citizen menu.
 	require.True(t, app.handleMCCMessage(account, supContact, "wamid.s1", ExtractedMessage{Type: "text", Text: "hello"}))
+	menu := meta.lastMessageTo(mccTestSupervisorPhone)
+	assert.Contains(t, menu, `"type":"list"`)
+	assert.Contains(t, menu, "Pending: *1*")
+	assert.Contains(t, menu, `"id":"`+mccBtnInbox+mccInboxPending+`"`)
+	assert.Contains(t, menu, `"title":"Pending (1)"`)
+	assert.Contains(t, menu, `"description":"Assigned to you`)
+	assert.Contains(t, menu, `"title":"To be breached (1)"`, "12h SLA is within the 2-day window")
+	assert.NotContains(t, menu, "mcc_solid_waste")
+
+	// Pending list opens the complaint rows.
+	require.True(t, app.handleMCCMessage(account, supContact, "wamid.s1b", ExtractedMessage{Type: "button_reply", ButtonID: mccBtnInbox + mccInboxPending}))
 	inbox := meta.lastMessageTo(mccTestSupervisorPhone)
-	assert.Contains(t, inbox, "pending complaints (1)")
+	assert.Contains(t, inbox, "Pending complaints (1)")
 	assert.Contains(t, inbox, mccBtnOpen+id)
-	assert.NotContains(t, inbox, "mcc_solid_waste")
+	assert.Contains(t, inbox, "due ")
+
+	// Open list is empty until something is in progress.
+	require.True(t, app.handleMCCMessage(account, supContact, "wamid.s1c", ExtractedMessage{Type: "button_reply", ButtonID: mccBtnInbox + mccInboxOpen}))
+	assert.Contains(t, meta.lastMessageTo(mccTestSupervisorPhone), "No open complaints")
 
 	// "new" still reaches the citizen menu.
 	require.True(t, app.handleMCCMessage(account, supContact, "wamid.s2", ExtractedMessage{Type: "text", Text: "New"}))
@@ -612,9 +627,9 @@ func TestMCC_SupervisorLocationGeofenceAndCancel(t *testing.T) {
 	assert.Zero(t, sessions)
 	assert.Equal(t, models.MCCStatusInProgress, reloadMCCGrievance(t, app, g.ID).Status)
 
-	// A plain location with nothing pending gets the inbox, not an error.
+	// A plain location with nothing pending gets the dashboard, not an error.
 	shareLocation(t, app, account, supContact, 12.8705, 74.8435)
-	assert.Contains(t, meta.lastMessageTo(mccTestSupervisorPhone), "pending complaints")
+	assert.Contains(t, meta.lastMessageTo(mccTestSupervisorPhone), "Supervisor dashboard")
 }
 
 func TestMCC_DistanceM(t *testing.T) {

@@ -71,8 +71,14 @@ func (c *Client) SendInteractiveButtons(ctx context.Context, account *Account, r
 	}
 
 	var interactive map[string]any
+	useList := len(buttons) > 3
+	for _, btn := range buttons {
+		if btn.Description != "" {
+			useList = true
+		}
+	}
 
-	if len(buttons) <= 3 {
+	if !useList {
 		// Use button format
 		buttonsList := make([]map[string]any, 0, len(buttons))
 		for _, btn := range buttons {
@@ -100,10 +106,14 @@ func (c *Client) SendInteractiveButtons(ctx context.Context, account *Account, r
 		rows := make([]map[string]any, 0, len(buttons))
 		for _, btn := range buttons {
 			title := truncateLabel(btn.Title, 24)
-			rows = append(rows, map[string]any{
+			row := map[string]any{
 				"id":    btn.ID,
 				"title": title,
-			})
+			}
+			if btn.Description != "" {
+				row["description"] = truncateLabel(btn.Description, 72)
+			}
+			rows = append(rows, row)
 		}
 
 		interactive = map[string]any{

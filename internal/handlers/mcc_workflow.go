@@ -41,6 +41,15 @@ const (
 	mccBtnClose    = "mcc_close:"    // supervisor: close, then send details
 	mccBtnOK       = "mcc_ok:"       // citizen: satisfied with the closure
 	mccBtnReopen   = "mcc_reopen:"   // citizen: not satisfied, reopen
+	mccBtnInbox    = "mcc_inbox:"    // supervisor: list complaints (pending|open|breach)
+)
+
+// Supervisor menu filters.
+const (
+	mccInboxPending = "pending" // assigned / reopened, work not started
+	mccInboxOpen    = "open"    // in progress
+	mccInboxBreach  = "breach"  // pending or open and due within mccBreachWindow
+	mccBreachWindow = 48 * time.Hour
 )
 
 const (
@@ -465,27 +474,90 @@ func mccPhoneVariants(phone string) []string {
 
 // sendMCCSupervisorInbox lists the supervisor's unresolved complaints.
 func (a *App) sendMCCSupervisorInbox(account *models.WhatsAppAccount, contact *models.Contact) {
-	var open []models.MCCGrievance
-	a.DB.Where("organization_id = ? AND supervisor_contact_id = ? AND status IN (?)",
-		account.OrganizationID, contact.ID,
-		[]string{models.MCCStatusAssigned, models.MCCStatusInProgress, models.MCCStatusReopened}).
-		Order("created_at ASC").Limit(mccInboxMax).Find(&open)
+	a.sendMCCSupervisorMenu(account, contact)
+}
 
-	if len(open) == 0 {
-		_ = a.sendAndSaveTextMessage(account, contact,
-			"👋 You have no pending complaints right now.\n\nReply *"+mccNewComplaintKeyword+"* to report a complaint yourself.")
+// mccInboxQuery scopes the supervisor's complaints to a menu filter.
+func (a *App) mccInboxQuery(account *models.WhatsAppAccount, contact *models.Contact, filter string) *gorm.DB {
+	q := a.DB.Model(&models.MCCGrievance{}).Where("organization_id = ? AND supervisor_contact_id = ?", account.OrganizationID, contact.ID)
+	switch filter {
+	case mccInboxPending:
+		return q.Where("status IN (?)", []string{models.MCCStatusAssigned, models.MCCStatusReopened})
+	case mccInboxOpen:
+		return q.Where("status = ?", models.MCCStatusInProgress)
+	default: // breach
+		return q.Where("status IN (?) AND due_at IS NOT NULL AND due_at <= ?",
+			[]string{models.MCCStatusAssigned, models.MCCStatusReopened, models.MCCStatusInProgress}, time.Now().Add(mccBreachWindow))
+	}
+}
+
+// sendMCCSupervisorMenu is the supervisor's home: counts plus a list with
+// Pending / Open / To be breached.
+func (a *App) sendMCCSupervisorMenu(account *models.WhatsAppAccount, contact *models.Contact) {
+	var pending, open, breach int64
+	a.mccInboxQuery(account, contact, mccInboxPending).Count(&pending)
+	a.mccInboxQuery(account, contact, mccInboxOpen).Count(&open)
+	a.mccInboxQuery(account, contact, mccInboxBreach).Count(&breach)
+
+	body := fmt.Sprintf("👷 *Supervisor dashboard*\n\nPending: *%d*  ·  Open: *%d*  ·  To be breached: *%d*\n\n"+
+		"Choose a list below.", pending, open, breach)
+	if pending+open == 0 {
+		body = "👋 You have no complaints assigned right now.\n\nReply *" + mccNewComplaintKeyword + "* to report a complaint yourself."
+		_ = a.sendAndSaveTextMessage(account, contact, body)
+		return
+	}
+	err := a.sendMCCMessage(OutgoingMessageRequest{
+		Account: account, Contact: contact, Type: models.MessageTypeInteractive, InteractiveType: "list",
+		BodyText: body,
+		Buttons: []whatsapp.Button{
+			{ID: mccBtnInbox + mccInboxPending, Title: fmt.Sprintf("Pending (%d)", pending), Description: "Assigned to you, work not started yet"},
+			{ID: mccBtnInbox + mccInboxOpen, Title: fmt.Sprintf("Open (%d)", open), Description: "Marked in progress by you"},
+			{ID: mccBtnInbox + mccInboxBreach, Title: fmt.Sprintf("To be breached (%d)", breach), Description: "Pending or open, SLA due within 2 days or overdue"},
+		},
+	})
+	if err != nil {
+		a.Log.Error("Failed to send MCC supervisor menu", "error", err, "contact", contact.PhoneNumber)
+	}
+}
+
+// sendMCCSupervisorList sends the complaints behind one menu entry.
+func (a *App) sendMCCSupervisorList(account *models.WhatsAppAccount, contact *models.Contact, filter string) {
+	var items []models.MCCGrievance
+	order := "created_at ASC"
+	if filter == mccInboxBreach {
+		order = "due_at ASC"
+	}
+	a.mccInboxQuery(account, contact, filter).Order(order).Limit(mccInboxMax).Find(&items)
+
+	titles := map[string]string{mccInboxPending: "Pending complaints", mccInboxOpen: "Open complaints", mccInboxBreach: "Complaints to be breached"}
+	title := titles[filter]
+	if title == "" {
+		title = titles[mccInboxBreach]
+	}
+	if len(items) == 0 {
+		_ = a.sendAndSaveTextMessage(account, contact, fmt.Sprintf("✅ No %s right now.\n\nReply anything to go back to the dashboard.", strings.ToLower(title)))
 		return
 	}
 
+	now := time.Now()
 	var b strings.Builder
-	fmt.Fprintf(&b, "📋 *Your pending complaints (%d)*\n", len(open))
-	buttons := make([]whatsapp.Button, 0, len(open))
-	for _, g := range open {
+	fmt.Fprintf(&b, "📋 *%s (%d)*\n", title, len(items))
+	buttons := make([]whatsapp.Button, 0, len(items))
+	for _, g := range items {
 		fmt.Fprintf(&b, "\n• %s – %s, ward %d", mccRef(&g), g.ComplaintType, g.WardNo)
 		if g.Status == models.MCCStatusReopened {
 			b.WriteString(" (reopened)")
 		}
-		buttons = append(buttons, whatsapp.Button{ID: mccBtnOpen + mccIDString(&g), Title: mccRef(&g)})
+		desc := g.ComplaintType
+		if g.DueAt != nil {
+			due := "due " + g.DueAt.In(mccIST).Format("02 Jan 15:04")
+			if g.DueAt.Before(now) {
+				due = "OVERDUE since " + g.DueAt.In(mccIST).Format("02 Jan 15:04")
+			}
+			fmt.Fprintf(&b, " – %s", due)
+			desc = due + " · " + desc
+		}
+		buttons = append(buttons, whatsapp.Button{ID: mccBtnOpen + mccIDString(&g), Title: mccRef(&g), Description: desc})
 	}
 	b.WriteString("\n\nSelect a complaint to see its details and take action.")
 	if err := a.sendMCCMessage(OutgoingMessageRequest{
@@ -499,6 +571,13 @@ func (a *App) sendMCCSupervisorInbox(account *models.WhatsAppAccount, contact *m
 // handleMCCActionButton dispatches the workflow buttons. It returns false
 // for button IDs that are not part of the workflow.
 func (a *App) handleMCCActionButton(account *models.WhatsAppAccount, contact *models.Contact, buttonID string) bool {
+	if filter, ok := strings.CutPrefix(buttonID, mccBtnInbox); ok {
+		if !a.isMCCSupervisor(account.OrganizationID, contact) {
+			return false
+		}
+		a.sendMCCSupervisorList(account, contact, filter)
+		return true
+	}
 	var prefix string
 	for _, p := range []string{mccBtnOpen, mccBtnProgress, mccBtnClose, mccBtnOK, mccBtnReopen} {
 		if strings.HasPrefix(buttonID, p) {

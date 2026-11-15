@@ -21,6 +21,9 @@ type Button struct {
 	Title string `json:"title"`
 	Type  string `json:"type,omitempty"` // "reply" (default) or "url"
 	URL   string `json:"url,omitempty"`  // URL for type="url" buttons
+	// Description shows under the title in a list row (max 72 chars). Any
+	// description forces the list format even for 1-3 options.
+	Description string `json:"description,omitempty"`
 }
 
 // MetaAPIResponse represents a successful API response from Meta
