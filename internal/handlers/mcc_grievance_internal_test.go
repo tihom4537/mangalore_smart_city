@@ -178,16 +178,19 @@ func TestMCC_CloseFormJSON(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, want := range []string{`"id":"CLOSE_COMPLAINT"`, `"init-value":"${data.address}"`, `"name":"work_location"`,
+	for _, want := range []string{`"id":"CLOSE_COMPLAINT"`, `"init-value":"${data.address}"`, `"name":"work_location"`, `"text":"${data.heading}"`,
 		`"max-uploaded-photos":3`, `"action_photos":"${form.action_photos}"`} {
 		if !strings.Contains(string(raw), want) {
 			t.Errorf("close form JSON missing %s", want)
 		}
 	}
 	screen := mccCloseForm{}.screens()[0].(map[string]any)
-	for _, key := range []string{"reference_no", "complaint_summary", "today", "address"} {
+	for _, key := range []string{"heading", "complaint_summary", "today", "address"} {
 		if _, ok := screen["data"].(map[string]any)[key]; !ok {
 			t.Errorf("close form must declare data.%s", key)
 		}
+	}
+	if strings.Contains(string(raw), `"Complaint ${data`) {
+		t.Error("no interpolation inside literal text; bind whole values")
 	}
 }

@@ -166,9 +166,9 @@ enabled = false
 # away than that (0 = record only).
 # supervisor_radius_m = 500
 # The closure (action report) form a supervisor fills in is a WhatsApp Flow the
-# bot creates and publishes on Meta on first use ("MMP Close Complaint v1").
+# bot creates and publishes on Meta on first use ("MMP Close Complaint v2").
 # To use a hand-made flow instead, name it here; it must take the same data
-# (reference_no, complaint_summary, today, address) and return the same
+# (heading, complaint_summary, today, address) and return the same
 # payload (action_taken, fixed_on, work_location, action_photos).
 # closure_flow_id = ""
 # closure_flow_screen = "CLOSE_COMPLAINT"

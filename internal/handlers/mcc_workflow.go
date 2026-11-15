@@ -828,7 +828,7 @@ func (a *App) sendMCCCloseForm(account *models.WhatsAppAccount, contact *models.
 		FlowToken:       token,
 		FlowFirstScreen: screen,
 		FlowData: map[string]any{
-			"reference_no":      mccRef(g),
+			"heading":           "Complaint " + mccRef(g),
 			"complaint_summary": mccOneLine(fmt.Sprintf("%s - %s, %s", g.ComplaintType, mccWardLabel(g), g.Address), 120),
 			"today":             time.Now().In(mccIST).Format(mccCloseDateLayout),
 			"address":           truncateRunes(address, 300),

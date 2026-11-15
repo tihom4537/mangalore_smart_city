@@ -59,7 +59,7 @@ type MCCConfig struct {
 	// recorded).
 	SupervisorRadiusM int `koanf:"supervisor_radius_m"`
 	// ClosureFlowID overrides the bot-managed closure Flow with a hand-made
-	// one taking the same data (reference_no, complaint_summary, today,
+	// one taking the same data (heading, complaint_summary, today,
 	// address) and payload (action_taken, fixed_on, work_location,
 	// action_photos).
 	ClosureFlowID string `koanf:"closure_flow_id"`

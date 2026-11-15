@@ -258,16 +258,18 @@ func (f *mccForm) metaName() string { return f.MetaName }
 type mccCloseForm struct{}
 
 const (
-	mccCloseFormName   = "MMP Close Complaint v1"
+	mccCloseFormName   = "MMP Close Complaint v2"
 	mccCloseScreenID   = "CLOSE_COMPLAINT"
 	mccCloseFormHeader = "Close complaint"
 )
 
 func (mccCloseForm) metaName() string { return mccCloseFormName }
 
-// screens: data reference_no, complaint_summary, today and address (the
-// supervisor's shared location, reverse geocoded) pre-fill the form; the
-// payload keys are read by receiveMCCCloseForm.
+// screens: data heading ("Complaint <ref>"), complaint_summary, today and
+// address (the supervisor's shared location, reverse geocoded) pre-fill the
+// form; the payload keys are read by receiveMCCCloseForm. Every bound text
+// is a whole-value binding: Flows don't reliably interpolate "${...}"
+// inside a longer string.
 func (mccCloseForm) screens() []any {
 	return []any{
 		map[string]any{
@@ -276,7 +278,7 @@ func (mccCloseForm) screens() []any {
 			"terminal": true,
 			"success":  true,
 			"data": map[string]any{
-				"reference_no":      map[string]any{"type": "string", "__example__": "MMP-SW-000007"},
+				"heading":           map[string]any{"type": "string", "__example__": "Complaint MMP-SW-000007"},
 				"complaint_summary": map[string]any{"type": "string", "__example__": "Garbage not collected - Ward 12, Hampankatta"},
 				"today":             map[string]any{"type": "string", "__example__": "2026-11-12"},
 				"address":           map[string]any{"type": "string", "__example__": "Near Hampankatta Circle, Mangaluru"},
@@ -285,7 +287,7 @@ func (mccCloseForm) screens() []any {
 				"type": "SingleColumnLayout",
 				"children": []any{
 					map[string]any{"type": "TextSubheading", "text": "Mangaluru Mahanagara Palike - Action report"},
-					map[string]any{"type": "TextBody", "text": "Complaint ${data.reference_no}"},
+					map[string]any{"type": "TextBody", "text": "${data.heading}"},
 					map[string]any{"type": "TextCaption", "text": "${data.complaint_summary}"},
 					map[string]any{
 						"type": "TextArea", "name": "action_taken", "label": "What was done?",

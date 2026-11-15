@@ -211,7 +211,7 @@ func TestMCC_SupervisorClosesWithDetailsAndCitizenIsNotified(t *testing.T) {
 	form := meta.lastMessageTo(mccTestSupervisorPhone)
 	assert.Contains(t, form, `"flow_id":"meta-flow-1"`, "flow created on Meta by the bot")
 	assert.Contains(t, form, `"address":"Hampankatta, Mangaluru`)
-	assert.Contains(t, form, `"reference_no":"`+mccRef(g)+`"`)
+	assert.Contains(t, form, `"heading":"Complaint `+mccRef(g)+`"`)
 	assert.Equal(t, 1, meta.count("POST /v18.0/"+account.BusinessID+"/flows"), "closure flow created once")
 	var createdFlow models.WhatsAppFlow
 	require.NoError(t, app.DB.Where("name = ?", mccCloseFormName).First(&createdFlow).Error)
@@ -466,7 +466,7 @@ func TestMCC_SupervisorClosesViaFlowForm(t *testing.T) {
 	assert.Zero(t, meta.count("POST /v18.0/"+account.BusinessID+"/flows"))
 	assert.Contains(t, form, `"address":"Hampankatta, Mangaluru`)
 	assert.Contains(t, form, mccCloseScreenID)
-	assert.Contains(t, form, `"reference_no":"`+mccRef(g)+`"`)
+	assert.Contains(t, form, `"heading":"Complaint `+mccRef(g)+`"`)
 	assert.Contains(t, form, `"today":"`)
 	var session models.MCCSession
 	require.NoError(t, app.DB.Where("contact_id = ?", supContact.ID).First(&session).Error)
