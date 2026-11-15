@@ -360,11 +360,11 @@ func mccSupervisorButtons(g *models.MCCGrievance) []whatsapp.Button {
 	switch g.Status {
 	case models.MCCStatusAssigned, models.MCCStatusReopened:
 		return []whatsapp.Button{
-			{ID: mccBtnProgress + id, Title: "🔧 In progress"},
-			{ID: mccBtnClose + id, Title: "✅ Close complaint"},
+			{ID: mccBtnProgress + id, Title: "Mark In progress"},
+			{ID: mccBtnClose + id, Title: "Mark Close complaint"},
 		}
 	case models.MCCStatusInProgress:
-		return []whatsapp.Button{{ID: mccBtnClose + id, Title: "✅ Close complaint"}}
+		return []whatsapp.Button{{ID: mccBtnClose + id, Title: "Mark Close complaint"}}
 	}
 	return nil
 }
