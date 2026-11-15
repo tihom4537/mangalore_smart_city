@@ -8,6 +8,7 @@ import (
 	"image/draw"
 	"image/jpeg"
 	_ "image/png" // decode PNG photos
+	"math"
 	"os"
 	"path/filepath"
 	"time"
@@ -40,12 +41,15 @@ const (
 	mccCompositeW      = 1200
 	mccCompositeH      = 675
 	mccCompositeStrip  = 75 // caption strip height
-	mccCompositeGutter = 6
+	mccCompositeGutter = 24 // white gap between the before and after halves
+	mccCompositeGap    = 6  // white gap between photos on one side
+	mccCompositeMax    = 3  // photos per side
 	mccCompositeDir    = "images"
 )
 
 var (
-	mccColorBg     = color.RGBA{0xf2, 0xf2, 0xf2, 0xff}
+	mccColorBg     = color.RGBA{0xff, 0xff, 0xff, 0xff}
+	mccColorCell   = color.RGBA{0xf4, 0xf4, 0xf4, 0xff} // letterbox behind a fitted photo
 	mccColorStrip  = color.RGBA{0x1f, 0x3a, 0x5f, 0xff}
 	mccColorPanel  = color.RGBA{0xd9, 0xd9, 0xd9, 0xff}
 	mccColorRibbon = color.RGBA{0x00, 0x00, 0x00, 0xa0} // translucent, reads on any photo
@@ -53,12 +57,13 @@ var (
 	mccColorAfter  = color.RGBA{0x2e, 0xcc, 0x71, 0xff}
 )
 
-// renderMCCBeforeAfter draws the composite and returns it as JPEG.
-// A side without a readable photo gets a grey "No photo" panel, so the
-// composite can always be produced.
+// renderMCCBeforeAfter draws the composite and returns it as JPEG. Each
+// side shows up to mccCompositeMax photos, fitted without cropping; a side
+// without a readable photo gets a grey "No photo" panel, so the composite
+// can always be produced.
 func (a *App) renderMCCBeforeAfter(g *models.MCCGrievance) ([]byte, error) {
-	before := a.firstMCCImage(g.PhotoURLs)
-	after := a.firstMCCImage(g.ActionPhotoURLs)
+	before := a.mccImages(g.PhotoURLs, mccCompositeMax)
+	after := a.mccImages(g.ActionPhotoURLs, mccCompositeMax)
 	return mccDrawBeforeAfter(before, after, mccRef(g), mccCompositeCaption(g))
 }
 
@@ -76,9 +81,13 @@ func mccCompositeCaption(g *models.MCCGrievance) string {
 	return parts + "  ·  Resolved " + when.In(mccIST).Format("02 Jan 2006")
 }
 
-// firstMCCImage decodes the first readable photo in the list.
-func (a *App) firstMCCImage(photos models.JSONBArray) image.Image {
+// mccImages decodes up to max readable photos from the list, in order.
+func (a *App) mccImages(photos models.JSONBArray, max int) []image.Image {
+	var out []image.Image
 	for _, raw := range photos {
+		if len(out) == max {
+			break
+		}
 		path, _ := raw.(string)
 		data, _, err := a.readMCCMedia(path)
 		if err != nil {
@@ -89,12 +98,36 @@ func (a *App) firstMCCImage(photos models.JSONBArray) image.Image {
 			a.Log.Warn("MCC photo not decodable", "path", path, "error", err)
 			continue
 		}
-		return img
+		out = append(out, img)
 	}
-	return nil
+	return out
 }
 
-func mccDrawBeforeAfter(before, after image.Image, ref, caption string) ([]byte, error) {
+// mccCells splits a side into cells for n photos: 1 fills it, 2 are
+// stacked, 3 are one on top and two below.
+func mccCells(r image.Rectangle, n int) []image.Rectangle {
+	g := mccCompositeGap
+	switch {
+	case n <= 1:
+		return []image.Rectangle{r}
+	case n == 2:
+		mid := r.Min.Y + (r.Dy()-g)/2
+		return []image.Rectangle{
+			image.Rect(r.Min.X, r.Min.Y, r.Max.X, mid),
+			image.Rect(r.Min.X, mid+g, r.Max.X, r.Max.Y),
+		}
+	default:
+		mid := r.Min.Y + (r.Dy()-g)*6/10
+		xm := r.Min.X + (r.Dx()-g)/2
+		return []image.Rectangle{
+			image.Rect(r.Min.X, r.Min.Y, r.Max.X, mid),
+			image.Rect(r.Min.X, mid+g, xm, r.Max.Y),
+			image.Rect(xm+g, mid+g, r.Max.X, r.Max.Y),
+		}
+	}
+}
+
+func mccDrawBeforeAfter(before, after []image.Image, ref, caption string) ([]byte, error) {
 	dc := gg.NewContext(mccCompositeW, mccCompositeH)
 	dc.SetColor(mccColorBg)
 	dc.Clear()
@@ -103,7 +136,7 @@ func mccDrawBeforeAfter(before, after image.Image, ref, caption string) ([]byte,
 	halfW := (mccCompositeW - mccCompositeGutter) / 2
 	panels := []struct {
 		x     int
-		img   image.Image
+		imgs  []image.Image
 		label string
 		col   color.RGBA
 	}{
@@ -112,8 +145,14 @@ func mccDrawBeforeAfter(before, after image.Image, ref, caption string) ([]byte,
 	}
 	for _, p := range panels {
 		rect := image.Rect(p.x, 0, p.x+halfW, photoH)
-		if p.img != nil {
-			mccDrawCover(dc.Image().(draw.Image), p.img, rect)
+		if len(p.imgs) > 0 {
+			cells := mccCells(rect, len(p.imgs))
+			for i, img := range p.imgs {
+				dc.SetColor(mccColorCell)
+				dc.DrawRectangle(float64(cells[i].Min.X), float64(cells[i].Min.Y), float64(cells[i].Dx()), float64(cells[i].Dy()))
+				dc.Fill()
+				mccDrawContain(dc.Image().(draw.Image), img, cells[i])
+			}
 		} else {
 			dc.SetColor(mccColorPanel)
 			dc.DrawRectangle(float64(rect.Min.X), 0, float64(halfW), float64(photoH))
@@ -151,20 +190,18 @@ func mccDrawBeforeAfter(before, after image.Image, ref, caption string) ([]byte,
 	return buf.Bytes(), nil
 }
 
-// mccDrawCover scales img to fill rect, centre-cropping the overflow.
-func mccDrawCover(dst draw.Image, img image.Image, rect image.Rectangle) {
+// mccDrawContain scales img to fit inside rect without cropping, centred.
+func mccDrawContain(dst draw.Image, img image.Image, rect image.Rectangle) {
 	sb := img.Bounds()
 	sw, sh := float64(sb.Dx()), float64(sb.Dy())
-	dw, dh := float64(rect.Dx()), float64(rect.Dy())
-	scale := dw / sw
-	if sh*scale < dh {
-		scale = dh / sh
+	if sw == 0 || sh == 0 {
+		return
 	}
-	cropW, cropH := dw/scale, dh/scale
-	x0 := sb.Min.X + int((sw-cropW)/2)
-	y0 := sb.Min.Y + int((sh-cropH)/2)
-	src := image.Rect(x0, y0, x0+int(cropW), y0+int(cropH))
-	xdraw.CatmullRom.Scale(dst, rect, img, src, draw.Src, nil)
+	scale := math.Min(float64(rect.Dx())/sw, float64(rect.Dy())/sh)
+	w, h := int(sw*scale), int(sh*scale)
+	x0 := rect.Min.X + (rect.Dx()-w)/2
+	y0 := rect.Min.Y + (rect.Dy()-h)/2
+	xdraw.CatmullRom.Scale(dst, image.Rect(x0, y0, x0+w, y0+h), img, sb, draw.Src, nil)
 }
 
 // mccFitCaption trims the caption to the available width.
