@@ -46,6 +46,12 @@ type OutgoingMessageRequest struct {
 	MediaFilename string
 	Caption       string
 
+	// Location messages (a map pin)
+	Latitude        float64
+	Longitude       float64
+	LocationName    string
+	LocationAddress string
+
 	// Interactive messages
 	InteractiveType string            // "button", "list", "cta_url", "voice_call"
 	BodyText        string            // Body text for interactive messages
@@ -228,6 +234,9 @@ func (a *App) SendOutgoingMessage(ctx context.Context, req OutgoingMessageReques
 			components = append(components, whatsapp.QuickReplyPayloadComponents(req.QuickReplyPayloads, req.Template.Buttons)...)
 			return a.WhatsApp.SendTemplateMessage(sendCtx, waAccount, rcpt, req.Template.Name, req.Template.Language, components)
 
+		case models.MessageTypeLocation:
+			return a.WhatsApp.SendLocationMessage(sendCtx, waAccount, rcpt, req.Latitude, req.Longitude, req.LocationName, req.LocationAddress)
+
 		case models.MessageTypeFlow:
 			if req.FlowID == "" {
 				return "", fmt.Errorf("flow ID is required for flow messages")
@@ -307,6 +316,16 @@ func (a *App) createOutgoingMessage(req OutgoingMessageRequest, opts MessageSend
 	case models.MessageTypeInteractive:
 		msg.Content = req.BodyText
 		msg.InteractiveData = a.buildInteractiveData(req)
+
+	case models.MessageTypeLocation:
+		msg.Content = strings.TrimSpace(fmt.Sprintf("📍 %s %s", req.LocationName, req.LocationAddress))
+		msg.InteractiveData = models.JSONB{
+			"type":      "location",
+			"latitude":  req.Latitude,
+			"longitude": req.Longitude,
+			"name":      req.LocationName,
+			"address":   req.LocationAddress,
+		}
 
 	case models.MessageTypeFlow:
 		msg.Content = req.BodyText

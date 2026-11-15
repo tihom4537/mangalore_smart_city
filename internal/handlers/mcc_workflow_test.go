@@ -483,3 +483,52 @@ func TestMCC_ParseFlowDate(t *testing.T) {
 	assert.Equal(t, "2025-11-12", mccParseFlowDate(json.Number("1762905600000")).In(mccIST).Format("2006-01-02"))
 	assert.Equal(t, "2025-11-12", mccParseFlowDate(float64(1762905600000)).In(mccIST).Format("2006-01-02"))
 }
+
+func TestMCC_SupervisorTemplateIsSyncedFromMetaOnFirstUse(t *testing.T) {
+	app, meta, account, citizen := newMCCTestApp(t)
+	app.Config.MCC.SupervisorTemplate = "mcc_new_complaint"
+	mccTemplateSyncedAt.Delete(account.ID)
+	createMCCSupervisor(t, app, account.OrganizationID, "Sup", mccTestSupervisorPhone, 37, "")
+	var before int64
+	app.DB.Model(&models.Template{}).Where("whats_app_account = ? AND name = ?", account.Name, "mcc_new_complaint").Count(&before)
+	require.Zero(t, before, "template not synced yet")
+
+	g := fileMCCGrievance(t, app, account, citizen, "wamid.flowsync")
+
+	assert.Equal(t, 1, meta.count("GET /v18.0/"+account.BusinessID+"/message_templates"), "synced from Meta once")
+	var tpl models.Template
+	require.NoError(t, app.DB.Where("whats_app_account = ? AND name = ?", account.Name, "mcc_new_complaint").First(&tpl).Error)
+	assert.Equal(t, "IMAGE", tpl.HeaderType)
+	assert.Equal(t, "APPROVED", tpl.Status)
+	msgs := meta.messagesTo(mccTestSupervisorPhone)
+	require.Len(t, msgs, 1)
+	assert.Contains(t, msgs[0], `"name":"mcc_new_complaint"`)
+	assert.Contains(t, msgs[0], `"payload":"`+mccBtnOpen+mccIDString(g)+`"`)
+	assert.Empty(t, reloadMCCGrievance(t, app, g.ID).NotifyError)
+}
+
+func TestMCC_SupervisorLocationPin(t *testing.T) {
+	app, meta, account, citizen := newMCCTestApp(t)
+	app.Config.MCC.SupervisorLocationPin = true
+	createMCCSupervisor(t, app, account.OrganizationID, "Sup", mccTestSupervisorPhone, 37, "")
+	supContact, _, _ := contactutil.GetOrCreateContact(app.DB, account.OrganizationID, mccTestSupervisorPhone, "")
+	inWindow(t, app, supContact)
+
+	g := fileMCCGrievance(t, app, account, citizen, "wamid.flowpin")
+
+	msgs := meta.messagesTo(mccTestSupervisorPhone)
+	require.GreaterOrEqual(t, len(msgs), 2)
+	pin := msgs[len(msgs)-1]
+	assert.Contains(t, pin, `"type":"location"`)
+	assert.Contains(t, pin, `"latitude":"12.8698"`)
+	assert.Contains(t, pin, `"longitude":"74.843"`)
+	assert.Contains(t, pin, mccRef(g))
+	assert.Contains(t, pin, "2nd cross, Maroli")
+
+	// Opening the card again re-sends the pin after it.
+	n := len(msgs)
+	require.True(t, app.handleMCCMessage(account, supContact, "wamid.o", ExtractedMessage{Type: "button_reply", ButtonID: mccBtnOpen + mccIDString(g)}))
+	msgs = meta.messagesTo(mccTestSupervisorPhone)
+	require.Len(t, msgs, n+2, "card then pin")
+	assert.Contains(t, msgs[n+1], `"type":"location"`)
+}

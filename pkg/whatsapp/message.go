@@ -285,6 +285,40 @@ type TemplateParam struct {
 	} `json:"video,omitempty"`
 }
 
+// SendLocationMessage sends a map pin the recipient can open in their maps
+// app. Name and address are optional captions under the pin.
+func (c *Client) SendLocationMessage(ctx context.Context, account *Account, rcpt Recipient, latitude, longitude float64, name, address string) (string, error) {
+	loc := map[string]any{
+		"latitude":  strconv.FormatFloat(latitude, 'f', -1, 64),
+		"longitude": strconv.FormatFloat(longitude, 'f', -1, 64),
+	}
+	if name != "" {
+		loc["name"] = name
+	}
+	if address != "" {
+		loc["address"] = address
+	}
+	payload := map[string]any{
+		"messaging_product": "whatsapp",
+		"recipient_type":    "individual",
+		"type":              "location",
+		"location":          loc,
+	}
+	rcpt.SetOnPayload(payload)
+
+	respBody, err := c.doRequest(ctx, "POST", c.buildMessagesURL(account), payload, account.AccessToken)
+	if err != nil {
+		c.Log.Error("Failed to send location message", "error", err, "phone", rcpt.Phone)
+		return "", fmt.Errorf("failed to send location message: %w", err)
+	}
+	messageID, err := parseMessageID(respBody)
+	if err != nil {
+		return "", err
+	}
+	c.Log.Info("Location message sent", "message_id", messageID, "phone", rcpt.Phone)
+	return messageID, nil
+}
+
 // SendLocationRequest sends an interactive message with WhatsApp's native
 // "Send location" button.
 func (c *Client) SendLocationRequest(ctx context.Context, account *Account, rcpt Recipient, bodyText string) (string, error) {

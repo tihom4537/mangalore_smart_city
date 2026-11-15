@@ -157,6 +157,9 @@ enabled = false
 # citizen_closure_template = "mcc_complaint_resolved"
 # Map link format for the citizen's shared location (lat, lon)
 # maps_url = "https://www.google.com/maps?q=%f,%f"
+# Also send the citizen's shared location to the supervisor as a native
+# WhatsApp map pin right after the complaint message.
+# supervisor_location_pin = true
 # Published WhatsApp Flow a supervisor fills in to close a complaint (fields
 # action_taken, fixed_on, work_location, action_photos; the screen's data
 # block must declare reference_no, complaint_summary and today). Without it

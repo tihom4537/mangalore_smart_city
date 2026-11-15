@@ -9,12 +9,14 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/shridarpatil/whatomate/internal/contactutil"
 	"github.com/shridarpatil/whatomate/internal/models"
 	"github.com/shridarpatil/whatomate/pkg/whatsapp"
+	"gorm.io/gorm"
 )
 
 // Grievance workflow after a complaint is registered:
@@ -151,6 +153,10 @@ func (a *App) notifyMCCSupervisor(account *models.WhatsAppAccount, g *models.MCC
 		err = a.sendMCCComplaintCard(account, supContact, g, headline, true)
 	}
 
+	if err == nil {
+		a.sendMCCLocationPin(account, supContact, g)
+	}
+
 	updates := map[string]any{"notify_error": ""}
 	if err != nil {
 		a.Log.Error("Failed to notify MCC supervisor", "error", err, "grievance", g.ID, "phone", supContact.PhoneNumber)
@@ -218,14 +224,40 @@ func (a *App) uploadMCCPhoto(account *models.WhatsAppAccount, photos models.JSON
 }
 
 // mccTemplate loads an approved template by name for the account.
+// A template named in the config but not yet synced from Meta is fetched on
+// first use, at most once per mccTemplateSyncEvery per account.
 func (a *App) mccTemplate(account *models.WhatsAppAccount, name string) (*models.Template, error) {
 	var tpl models.Template
-	err := a.DB.Where("organization_id = ? AND whats_app_account = ? AND name = ?", account.OrganizationID, account.Name, name).
-		Order("status = 'APPROVED' DESC").First(&tpl).Error
+	q := a.DB.Where("organization_id = ? AND whats_app_account = ? AND name = ?", account.OrganizationID, account.Name, name).
+		Order("status = 'APPROVED' DESC")
+	err := q.First(&tpl).Error
+	if errors.Is(err, gorm.ErrRecordNotFound) && a.mccSyncTemplatesOnce(account) {
+		err = q.First(&tpl).Error
+	}
 	if err != nil {
 		return nil, fmt.Errorf("template %q: %w", name, err)
 	}
 	return &tpl, nil
+}
+
+const mccTemplateSyncEvery = 10 * time.Minute
+
+var mccTemplateSyncedAt sync.Map // account ID -> time.Time
+
+// mccSyncTemplatesOnce syncs the account's templates from Meta unless that
+// was done recently. It returns true when a sync ran.
+func (a *App) mccSyncTemplatesOnce(account *models.WhatsAppAccount) bool {
+	if last, ok := mccTemplateSyncedAt.Load(account.ID); ok && time.Since(last.(time.Time)) < mccTemplateSyncEvery {
+		return false
+	}
+	mccTemplateSyncedAt.Store(account.ID, time.Now())
+	n, err := a.syncTemplatesForAccount(account)
+	if err != nil {
+		a.Log.Error("MCC template sync failed", "error", err, "account", account.Name)
+		return false
+	}
+	a.Log.Info("MCC synced templates from Meta", "account", account.Name, "count", n)
+	return true
 }
 
 // mccQuickReplyPayloads maps the template's QUICK_REPLY buttons, in order,
@@ -299,6 +331,25 @@ func (a *App) sendMCCComplaintCard(account *models.WhatsAppAccount, contact *mod
 		Account: account, Contact: contact, Type: models.MessageTypeInteractive,
 		InteractiveType: "button", BodyText: body, Buttons: buttons,
 	})
+}
+
+// sendMCCLocationPin sends the citizen's shared location as a WhatsApp map
+// pin (config supervisor_location_pin) so the supervisor can navigate to it
+// in one tap. Nothing is sent when no location was shared; failures are
+// logged, the complaint message itself already went out.
+func (a *App) sendMCCLocationPin(account *models.WhatsAppAccount, contact *models.Contact, g *models.MCCGrievance) {
+	if !a.Config.MCC.SupervisorLocationPin || g.Latitude == nil || g.Longitude == nil {
+		return
+	}
+	err := a.sendMCCMessage(OutgoingMessageRequest{
+		Account: account, Contact: contact, Type: models.MessageTypeLocation,
+		Latitude: *g.Latitude, Longitude: *g.Longitude,
+		LocationName:    mccRef(g) + " – " + mccOneLine(g.ComplaintType, 60),
+		LocationAddress: mccOneLine(g.Address, 200),
+	})
+	if err != nil {
+		a.Log.Error("Failed to send MCC location pin", "error", err, "grievance", g.ID, "phone", contact.PhoneNumber)
+	}
 }
 
 func mccSupervisorButtons(g *models.MCCGrievance) []whatsapp.Button {
@@ -476,6 +527,8 @@ func (a *App) handleMCCActionButton(account *models.WhatsAppAccount, contact *mo
 		case mccBtnOpen:
 			if err := a.sendMCCComplaintCard(account, contact, &g, "📄 *Complaint details*", a.Config.MCC.SupervisorTemplate == ""); err != nil {
 				a.Log.Error("Failed to send MCC card", "error", err, "grievance", g.ID)
+			} else {
+				a.sendMCCLocationPin(account, contact, &g)
 			}
 		case mccBtnProgress:
 			a.mccMarkInProgress(account, contact, &g)
